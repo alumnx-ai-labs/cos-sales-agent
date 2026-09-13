@@ -688,20 +688,6 @@ Expected: FAIL with `ModuleNotFoundError: No module named 'app.database'`
 ```
 
 ```python
-# app/database/mongodb.py
-from pymongo import MongoClient
-from pymongo.database import Database
-
-
-def get_client(uri: str) -> MongoClient:
-    return MongoClient(uri)
-
-
-def get_database(client: MongoClient, name: str) -> Database:
-    return client[name]
-```
-
-```python
 # app/database/indexes.py
 from pymongo.database import Database
 
@@ -729,18 +715,10 @@ def initialize_indexes(db: Database) -> None:
     )
 
     db.processing_runs.create_index("started_at")
-
-
-def initialize_database(client, database_name: str) -> Database:
-    db = get_database(client, database_name)
-    initialize_indexes(db)
-    return db
 ```
 
-Note: `get_database` must be imported inside `initialize_database` to avoid a circular top-level import — since both live in this task, define `initialize_database` in `app/database/mongodb.py` instead, importing `initialize_indexes` from `app/database/indexes.py`:
-
 ```python
-# app/database/mongodb.py (revised, replaces the version above)
+# app/database/mongodb.py
 from pymongo import MongoClient
 from pymongo.database import Database
 
@@ -760,6 +738,8 @@ def initialize_database(client: MongoClient, database_name: str) -> Database:
     initialize_indexes(db)
     return db
 ```
+
+Implement `app/database/indexes.py` first (no internal dependency), then `app/database/mongodb.py` (it imports `initialize_indexes` from the file you just wrote).
 
 - [ ] **Step 4: Run test to verify it passes**
 
@@ -1350,7 +1330,7 @@ from app.email.models import Email
 from app.interfaces.llm_provider import LLMProvider
 
 _COMPETITORS = ["Salesforce", "HubSpot", "Microsoft", "Zoho"]
-_PAIN_KEYWORDS = ["pricing", "price", "manual", "slow", "integration", "clunky", "expensive"]
+_PAIN_KEYWORDS = ["pricing", "manual", "slow", "integration", "clunky", "expensive"]
 _BUYING_SIGNAL_PATTERNS = [
     (re.compile(r"\bpricing\b", re.IGNORECASE), "pricing request"),
     (re.compile(r"\bdemo\b", re.IGNORECASE), "demo request"),
