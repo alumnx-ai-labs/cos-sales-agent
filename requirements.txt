@@ -1,0 +1,10 @@
+pydantic>=2.6,<3.0
+pydantic-settings>=2.2,<3.0
+pymongo>=4.6,<5.0
+mongomock>=4.1,<5.0
+streamlit>=1.32,<2.0
+rapidfuzz>=3.6,<4.0
+pytest>=8.0,<9.0
+anthropic>=0.25,<1.0
+openai>=1.14,<2.0
+python-dotenv>=1.0,<2.0
