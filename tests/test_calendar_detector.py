@@ -62,3 +62,21 @@ def test_no_meeting_language_returns_not_detected():
     )
     assert result.meeting_detected is False
     assert result.needs_clarification is False
+
+
+def test_ambiguous_phrase_with_coincidental_day_and_time_does_not_fabricate_meeting():
+    # "soon" is an ambiguous-phrase word, and "Friday" / "3pm" appear in the
+    # sentence, but there is no meeting verb (meet/call/sync/discussion/
+    # chat) at all -- this is not a scheduling request and must not be
+    # stitched into a fabricated meeting via the coincidental day/time.
+    result = detect_meeting(
+        _email("Following up on the Friday 3pm deadline for the report -- I will circle back soon."),
+        thread_id="thread_001",
+        tz_name="Asia/Kolkata",
+        reference_now=datetime(2026, 9, 13, tzinfo=timezone.utc),
+    )
+    assert result.meeting_detected is False
+    assert result.needs_clarification is True
+    assert result.missing_information
+    assert result.start is None
+    assert result.title is None

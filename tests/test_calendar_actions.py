@@ -112,3 +112,26 @@ def test_reject_calendar_action_sets_rejected_status():
     )
     result = reject_calendar_action(action)
     assert result.status == "rejected"
+
+
+@pytest.mark.parametrize("status", ["needs_clarification", "rejected", "scheduled", "failed", "pending", "approved"])
+def test_approve_calendar_action_fails_closed_if_not_awaiting_approval(status):
+    event = CalendarEvent(
+        title="ABC Corp Sales Discussion",
+        start=datetime(2026, 9, 15, 15, 0, tzinfo=timezone.utc),
+        end=datetime(2026, 9, 15, 16, 0, tzinfo=timezone.utc),
+        timezone="Asia/Kolkata",
+        description="Sales discussion",
+    )
+    action = CalendarAction(
+        thread_id="thread_001",
+        meeting_fingerprint=make_fingerprint(event.title, event.start, event.end),
+        status=status,
+        event=event,
+    )
+    provider = _RecordingCalendarProvider()
+    result = approve_calendar_action(action, provider)
+
+    assert result.status == "failed"
+    assert result.reason == "action is not awaiting approval"
+    assert len(provider.created_events) == 0

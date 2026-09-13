@@ -69,23 +69,25 @@ def detect_meeting(email: Email, thread_id: str, tz_name: str, reference_now: da
     body = email.body
 
     meeting_language_match = _MEETING_LANGUAGE.search(body)
-    ambiguous_match = _AMBIGUOUS_PHRASES.search(body)
 
-    # Neither an explicit meeting verb ("meet", "call", ...) nor a vague
-    # scheduling phrase ("maybe", "sometime", ...) is present, so there is no
-    # scheduling intent at all worth acting on.
-    if not meeting_language_match and not ambiguous_match:
+    if not meeting_language_match:
+        # No explicit meeting verb ("meet", "call", ...) at all. A vague
+        # scheduling phrase ("maybe", "sometime", "soon", ...) on its own is
+        # not enough evidence to attempt day/time extraction -- a day or
+        # time appearing elsewhere in an unrelated sentence (e.g. "the
+        # Friday 3pm deadline ... I will circle back soon") must not be
+        # stitched together into a fabricated meeting. Ask for clarification
+        # instead of ever running the day/time parsing logic below.
+        if _AMBIGUOUS_PHRASES.search(body):
+            return MeetingDetectionResult(
+                meeting_detected=False,
+                needs_clarification=True,
+                missing_information=["specific date", "specific time"],
+            )
         return MeetingDetectionResult(meeting_detected=False, needs_clarification=False)
 
     day_match = _WEEKDAY_PATTERN.search(body)
     tomorrow_match = _TOMORROW_PATTERN.search(body)
-
-    if ambiguous_match and not day_match and not tomorrow_match:
-        return MeetingDetectionResult(
-            meeting_detected=False,
-            needs_clarification=True,
-            missing_information=["specific date", "specific time"],
-        )
 
     if not day_match and not tomorrow_match:
         return MeetingDetectionResult(

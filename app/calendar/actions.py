@@ -46,11 +46,17 @@ def build_calendar_action(detection: MeetingDetectionResult, thread_id: str) -> 
 
 
 def approve_calendar_action(action: CalendarAction, calendar_provider: CalendarProvider) -> CalendarAction:
+    if action.status != "awaiting_approval":
+        return action.model_copy(update={"status": "failed", "reason": "action is not awaiting approval"})
+
     # Defense-in-depth: CalendarEvent already rejects non-empty attendees at
-    # construction time via its field_validator, but an action rehydrated
-    # from a dict (e.g. loaded back from MongoDB) bypasses that constructor
-    # validator entirely. Re-check immediately before the calendar provider
-    # is ever called, and fail closed rather than silently stripping.
+    # construction time via its field_validator, but that validator only
+    # runs on the normal constructor path. An event built via
+    # model_construct/model_copy, or one whose attendees were set through
+    # direct attribute mutation after construction (e.g. rehydrated from a
+    # dict loaded back from MongoDB), never re-runs it. Re-check immediately
+    # before the calendar provider is ever called, and fail closed rather
+    # than silently stripping.
     if action.event.attendees:
         return action.model_copy(update={"status": "failed", "reason": "external attendees not permitted"})
 
