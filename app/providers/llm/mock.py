@@ -16,6 +16,7 @@ _BUYING_SIGNAL_PATTERNS = [
     (re.compile(r"\bprocurement\b", re.IGNORECASE), "procurement request"),
 ]
 _SEAT_PATTERN = re.compile(r"\b(\d+)\s*(seats?|users?|licen[sc]es?)\b", re.IGNORECASE)
+_SAME_FACT_SIMILARITY_THRESHOLD = 40
 
 
 class MockLLMProvider(LLMProvider):
@@ -82,12 +83,12 @@ class MockLLMProvider(LLMProvider):
                 ["Customer shows strong buying intent"],
                 "inferred",
             )
-            # Also add to _inferred collection for test compatibility
-            context.setdefault("_inferred", []).append({
-                "value": "Customer shows strong buying intent",
-                "basis": "inferred",
-                "source_email_ids": [email_id]
-            })
+            # Also add to _inferred collection for test compatibility (with deduplication)
+            _append(
+                "_inferred",
+                ["Customer shows strong buying intent"],
+                "inferred",
+            )
 
         if new_analysis.get("summary"):
             context["summary"] = new_analysis["summary"]
@@ -95,8 +96,7 @@ class MockLLMProvider(LLMProvider):
         return context
 
     def verify_same_fact(self, existing_value: str, new_value: str, subject: str, predicate: str) -> bool:
-        # Use lower threshold to catch semantic similarity (e.g., "100 seats" vs "approximately 100 users")
-        return fuzz.token_sort_ratio(existing_value.lower(), new_value.lower()) >= 40
+        return fuzz.token_sort_ratio(existing_value.lower(), new_value.lower()) >= _SAME_FACT_SIMILARITY_THRESHOLD
 
     def draft_reply(self, context: dict[str, Any], latest_email: Email) -> dict[str, Any]:
         company = context.get("company", {}).get("name", "there")
