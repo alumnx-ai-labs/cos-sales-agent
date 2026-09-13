@@ -23,7 +23,7 @@ _ATTRIBUTE_PATTERNS: list[tuple[re.Pattern, str]] = [
     (re.compile(r"\bcontract length|term length\b"), "contract_length"),
 ]
 
-_LEADING_NUMBER = re.compile(r"^(\d+)")
+_LEADING_NUMBER = re.compile(r"(\d+)")
 
 
 def normalize_text(text: str) -> str:

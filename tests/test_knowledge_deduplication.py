@@ -1,12 +1,37 @@
 # tests/test_knowledge_deduplication.py
 from datetime import datetime, timezone
 
+from rapidfuzz import fuzz
+
+from app.interfaces.llm_provider import LLMProvider
 from app.knowledge.deduplication import process_new_fact
+from app.knowledge.normalize import classify_fact_key, normalize_text
 from app.providers.llm.mock import MockLLMProvider
 
 
 def _now():
     return datetime(2026, 9, 14, 10, 0, tzinfo=timezone.utc)
+
+
+class _StubLLM(LLMProvider):
+    """Minimal LLMProvider stub with a controllable verify_same_fact answer,
+    for exercising Step 4's ambiguous-band branch independent of
+    MockLLMProvider's own internal similarity threshold."""
+
+    def __init__(self, verify_result: bool):
+        self._verify_result = verify_result
+
+    def analyze_email(self, email):
+        raise NotImplementedError
+
+    def update_context(self, previous_context, new_analysis):
+        raise NotImplementedError
+
+    def verify_same_fact(self, existing_value: str, new_value: str, subject: str, predicate: str) -> bool:
+        return self._verify_result
+
+    def draft_reply(self, context, latest_email):
+        raise NotImplementedError
 
 
 def test_first_mention_creates_new_knowledge_item():
@@ -102,3 +127,67 @@ def test_unrelated_statements_do_not_merge_despite_text_similarity():
     )
     # different predicate -> never the same knowledge item regardless of text similarity
     assert len(items) == 2
+
+
+def test_step3_auto_merges_differing_fact_keys_at_high_fuzzy_similarity():
+    # Same predicate, but the fact_key classifier assigns these two phrasings different
+    # keys (a typo breaks the shared slug). rapidfuzz still scores them >= 90, so Step 3's
+    # auto-merge band should catch this without ever consulting the LLM.
+    a, b = "Acme Cloud Platform", "Acme Cloud Platfrom"
+    assert classify_fact_key("uses", a) != classify_fact_key("uses", b)
+    score = fuzz.token_sort_ratio(normalize_text(a), normalize_text(b))
+    assert score >= 90
+
+    llm = MockLLMProvider()
+    items, item1 = process_new_fact(
+        items=[], thread_id="thread_001", subject="ABC Corp", predicate="uses",
+        object_text=a, source_email_id="msg_001", basis="stated", llm=llm, now=_now(),
+    )
+    items, item2 = process_new_fact(
+        items=items, thread_id="thread_001", subject="ABC Corp", predicate="uses",
+        object_text=b, source_email_id="msg_002", basis="stated", llm=llm, now=_now(),
+    )
+    assert len(items) == 1
+    assert item2.knowledge_id == item1.knowledge_id
+    assert [h.value for h in item2.history] == [a, b]
+
+
+def test_step4_llm_confirms_ambiguous_band_merge():
+    # Same predicate, differing fact_key, and rapidfuzz score lands in the 60-90 ambiguous
+    # band -- Step 4 must consult the LLM. A stub that answers True should merge.
+    a, b = "an old CRM tool", "an old CRM system"
+    assert classify_fact_key("uses", a) != classify_fact_key("uses", b)
+    score = fuzz.token_sort_ratio(normalize_text(a), normalize_text(b))
+    assert 60 <= score < 90
+
+    llm = _StubLLM(verify_result=True)
+    items, item1 = process_new_fact(
+        items=[], thread_id="thread_001", subject="ABC Corp", predicate="uses",
+        object_text=a, source_email_id="msg_001", basis="stated", llm=llm, now=_now(),
+    )
+    items, item2 = process_new_fact(
+        items=items, thread_id="thread_001", subject="ABC Corp", predicate="uses",
+        object_text=b, source_email_id="msg_002", basis="stated", llm=llm, now=_now(),
+    )
+    assert len(items) == 1
+    assert item2.knowledge_id == item1.knowledge_id
+
+
+def test_step4_llm_rejects_ambiguous_band_stays_separate():
+    # Same pair, same ambiguous-band score, but a stub that answers False must NOT merge --
+    # the ambiguity is resolved against merging, so two distinct knowledge items remain.
+    a, b = "an old CRM tool", "an old CRM system"
+    score = fuzz.token_sort_ratio(normalize_text(a), normalize_text(b))
+    assert 60 <= score < 90
+
+    llm = _StubLLM(verify_result=False)
+    items, item1 = process_new_fact(
+        items=[], thread_id="thread_001", subject="ABC Corp", predicate="uses",
+        object_text=a, source_email_id="msg_001", basis="stated", llm=llm, now=_now(),
+    )
+    items, item2 = process_new_fact(
+        items=items, thread_id="thread_001", subject="ABC Corp", predicate="uses",
+        object_text=b, source_email_id="msg_002", basis="stated", llm=llm, now=_now(),
+    )
+    assert len(items) == 2
+    assert item2.knowledge_id != item1.knowledge_id
