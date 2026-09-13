@@ -191,3 +191,27 @@ def test_step4_llm_rejects_ambiguous_band_stays_separate():
     )
     assert len(items) == 2
     assert item2.knowledge_id != item1.knowledge_id
+
+
+def test_close_date_change_is_recorded_despite_sharing_a_coincidental_digit():
+    # Regression: the numeric-equality carve-out in _apply_update must be restricted to
+    # quantity-shaped fact_keys (seat_count). "close date of Nov 1, 2026" and "close date of
+    # Jan 1, 2026" both extract a leading/first digit of "1" (the day-of-month) -- if the
+    # carve-out applied here, the month change (the actual contradiction) would be silently
+    # swallowed as an "unchanged" value instead of being recorded in history.
+    a, b = "close date of Nov 1, 2026", "close date of Jan 1, 2026"
+    assert classify_fact_key("targets", a) == "close_date"
+    assert classify_fact_key("targets", b) == "close_date"
+
+    llm = MockLLMProvider()
+    items, _ = process_new_fact(
+        items=[], thread_id="thread_001", subject="ABC Corp", predicate="targets",
+        object_text=a, source_email_id="msg_001", basis="stated", llm=llm, now=_now(),
+    )
+    items, item = process_new_fact(
+        items=items, thread_id="thread_001", subject="ABC Corp", predicate="targets",
+        object_text=b, source_email_id="msg_002", basis="stated", llm=llm, now=_now(),
+    )
+    assert len(items) == 1  # same knowledge item, exact fact_key match
+    assert item.current_value == b
+    assert [h.value for h in item.history] == [a, b]

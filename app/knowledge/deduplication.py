@@ -11,6 +11,14 @@ from app.knowledge.normalize import classify_fact_key, extract_leading_number, n
 _EXACT_MATCH_THRESHOLD = 90
 _AMBIGUOUS_LOWER_BOUND = 60
 
+# fact_keys whose value is fully captured by a leading quantity (e.g. "100" in "100 seats"
+# means the same thing regardless of surrounding words). The numeric-equality carve-out in
+# _apply_update only applies to these -- for every other fact_key (close_date, budget,
+# pricing_tier, contract_length, and all set-membership fallback keys) a number is only part
+# of the value's meaning, so two texts sharing a coincidental digit (e.g. "Nov 1, 2026" vs
+# "Jan 1, 2026") must NOT be treated as unchanged.
+_QUANTITY_FACT_KEYS = {"seat_count"}
+
 
 def _find_exact(
     items: list[KnowledgeItem], thread_id: str, subject_key: str, predicate: str, fact_key: str
@@ -48,10 +56,13 @@ def _apply_update(item: KnowledgeItem, object_text: str, source_email_id: str, n
     new_number = extract_leading_number(object_text)
     current_number = extract_leading_number(item.current_value)
 
-    value_changed = (
-        new_value_normalized != current_value_normalized
-        and not (new_number is not None and current_number is not None and new_number == current_number)
+    is_unchanged_quantity = (
+        item.fact_key in _QUANTITY_FACT_KEYS
+        and new_number is not None
+        and current_number is not None
+        and new_number == current_number
     )
+    value_changed = new_value_normalized != current_value_normalized and not is_unchanged_quantity
 
     history = list(item.history)
     current_value = item.current_value
