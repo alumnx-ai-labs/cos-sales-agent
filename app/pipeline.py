@@ -81,10 +81,6 @@ def _upsert_thread(thread_repo: ThreadRepository, thread_id: str, email: Email) 
     )
 
 
-def _subject_name(context: ThreadContext, thread_id: str) -> str:
-    return context.company.get("name") or thread_id
-
-
 def _process_knowledge(
     knowledge_repo: KnowledgeRepository,
     thread_id: str,
@@ -170,87 +166,122 @@ def run_pipeline(
             results.append(EmailResult(message_id=email.message_id, final_stage="SKIPPED"))
             continue
 
-        email_repo.upsert_by_key({"message_id": email.message_id}, {"message_id": email.message_id})
+        email_repo.upsert_by_key(
+            {"message_id": email.message_id}, email.model_dump(mode="json", by_alias=True)
+        )
         email_repo.set_stage(email.message_id, ProcessingStage.RECEIVED.value)
         email_repo.set_stage(email.message_id, ProcessingStage.VALIDATED.value)
 
-        candidates = _load_thread_candidates(thread_repo)
-        thread_id = resolve_thread_id(email, candidates)
-        _upsert_thread(thread_repo, thread_id, email)
-        email_repo.set_stage(email.message_id, ProcessingStage.THREADED.value)
+        # Everything below calls out to LLM/provider code and mutates several
+        # collections across multiple stages. Any unexpected exception here
+        # (timeouts, transport errors, ...) must not crash the whole batch --
+        # it is recorded as a FAILED result at whatever stage was in flight,
+        # and the loop moves on to the next email.
+        current_stage = ProcessingStage.THREADED
+        try:
+            candidates = _load_thread_candidates(thread_repo)
+            thread_id = resolve_thread_id(email, candidates)
+            _upsert_thread(thread_repo, thread_id, email)
+            email_repo.set_stage(email.message_id, ProcessingStage.THREADED.value)
 
-        outcome = analyze_email_with_validation(llm_provider, email)
-        if not outcome.success:
+            current_stage = ProcessingStage.ANALYZED
+            outcome = analyze_email_with_validation(llm_provider, email)
+            if not outcome.success:
+                email_repo.set_stage(
+                    email.message_id,
+                    ProcessingStage.FAILED.value,
+                    error=outcome.error,
+                    failed_stage=ProcessingStage.ANALYZED.value,
+                )
+                results.append(EmailResult(message_id=email.message_id, final_stage="FAILED", error=outcome.error))
+                continue
+            analysis = outcome.analysis
+            email_repo.set_stage(email.message_id, ProcessingStage.ANALYZED.value)
+
+            current_stage = ProcessingStage.CONTEXT_BUILT
+            existing_snapshot = context_repo.find_one(
+                {"thread_id": thread_id, "triggering_email_id": email.message_id}
+            )
+            if existing_snapshot:
+                next_context = ThreadContext.model_validate(existing_snapshot["context"])
+            else:
+                previous_snapshot = context_repo.latest_for_thread(thread_id)
+                previous_context = (
+                    ThreadContext.model_validate(previous_snapshot["context"]) if previous_snapshot else None
+                )
+                next_context, changes = build_next_context(
+                    previous_context, analysis, email.message_id, llm_provider
+                )
+                next_version = (previous_snapshot["context_version"] + 1) if previous_snapshot else 1
+                context_repo.upsert_by_key(
+                    {"thread_id": thread_id, "triggering_email_id": email.message_id},
+                    {
+                        "thread_id": thread_id,
+                        "context_version": next_version,
+                        "triggering_email_id": email.message_id,
+                        "context": next_context.model_dump(mode="json"),
+                        "changes_from_previous_context": [c.model_dump(mode="json") for c in changes],
+                        "created_at": datetime.now(timezone.utc).isoformat(),
+                    },
+                )
+            email_repo.set_stage(email.message_id, ProcessingStage.CONTEXT_BUILT.value)
+
+            current_stage = ProcessingStage.KNOWLEDGE_PROCESSED
+            _process_knowledge(
+                knowledge_repo,
+                thread_id,
+                analysis,
+                llm_provider,
+                thread_id,
+                email.message_id,
+                datetime.now(timezone.utc),
+            )
+            email_repo.set_stage(email.message_id, ProcessingStage.KNOWLEDGE_PROCESSED.value)
+
+            current_stage = ProcessingStage.REPLY_PROCESSED
+            if needs_reply(analysis, email):
+                reply_key = {"source_email_id": email.message_id}
+                # A reply draft may already exist for this email (e.g. a human
+                # already approved/edited/sent it after an earlier partial run).
+                # Never blind-overwrite it -- only create it the first time.
+                if reply_repo.find_one(reply_key) is None:
+                    draft_content = draft_reply(llm_provider, next_context, email)
+                    draft = ReplyDraft(
+                        reply_id=f"reply_{email.message_id}",
+                        thread_id=thread_id,
+                        source_email_id=email.message_id,
+                        status="awaiting_approval",
+                        draft=draft_content,
+                    )
+                    reply_repo.upsert_by_key(reply_key, draft.model_dump(mode="json"))
+            email_repo.set_stage(email.message_id, ProcessingStage.REPLY_PROCESSED.value)
+
+            current_stage = ProcessingStage.MEETING_PROCESSED
+            detection = detect_meeting(email, thread_id, settings.timezone, email.timestamp)
+            action = build_calendar_action(detection, thread_id)
+            if action is not None:
+                calendar_key = {
+                    "thread_id": action.thread_id,
+                    "meeting_fingerprint": action.meeting_fingerprint,
+                }
+                # Same guard as reply_drafts above: a calendar action for this
+                # key may already have been approved/scheduled by a human, and
+                # must never be blind-overwritten by a later run.
+                if calendar_repo.find_one(calendar_key) is None:
+                    calendar_repo.upsert_by_key(calendar_key, action.model_dump(mode="json"))
+            email_repo.set_stage(email.message_id, ProcessingStage.MEETING_PROCESSED.value)
+
+            email_repo.set_stage(email.message_id, ProcessingStage.COMPLETED.value)
+            results.append(EmailResult(message_id=email.message_id, final_stage="COMPLETED"))
+        except Exception as exc:  # noqa: BLE001 - deliberately broad: any provider/stage failure must not crash the batch
             email_repo.set_stage(
                 email.message_id,
                 ProcessingStage.FAILED.value,
-                error=outcome.error,
-                failed_stage=ProcessingStage.ANALYZED.value,
+                error=str(exc),
+                failed_stage=current_stage.value,
             )
-            results.append(EmailResult(message_id=email.message_id, final_stage="FAILED", error=outcome.error))
+            results.append(EmailResult(message_id=email.message_id, final_stage="FAILED", error=str(exc)))
             continue
-        analysis = outcome.analysis
-        email_repo.set_stage(email.message_id, ProcessingStage.ANALYZED.value)
-
-        existing_snapshot = context_repo.find_one(
-            {"thread_id": thread_id, "triggering_email_id": email.message_id}
-        )
-        if existing_snapshot:
-            next_context = ThreadContext.model_validate(existing_snapshot["context"])
-        else:
-            previous_snapshot = context_repo.latest_for_thread(thread_id)
-            previous_context = (
-                ThreadContext.model_validate(previous_snapshot["context"]) if previous_snapshot else None
-            )
-            next_context, changes = build_next_context(previous_context, analysis, email.message_id, llm_provider)
-            next_version = (previous_snapshot["context_version"] + 1) if previous_snapshot else 1
-            context_repo.upsert_by_key(
-                {"thread_id": thread_id, "triggering_email_id": email.message_id},
-                {
-                    "thread_id": thread_id,
-                    "context_version": next_version,
-                    "triggering_email_id": email.message_id,
-                    "context": next_context.model_dump(mode="json"),
-                    "changes_from_previous_context": [c.model_dump(mode="json") for c in changes],
-                    "created_at": datetime.now(timezone.utc).isoformat(),
-                },
-            )
-        email_repo.set_stage(email.message_id, ProcessingStage.CONTEXT_BUILT.value)
-
-        _process_knowledge(
-            knowledge_repo,
-            thread_id,
-            analysis,
-            llm_provider,
-            _subject_name(next_context, thread_id),
-            email.message_id,
-            datetime.now(timezone.utc),
-        )
-        email_repo.set_stage(email.message_id, ProcessingStage.KNOWLEDGE_PROCESSED.value)
-
-        if needs_reply(analysis, email):
-            draft_content = draft_reply(llm_provider, next_context, email)
-            draft = ReplyDraft(
-                reply_id=f"reply_{email.message_id}",
-                thread_id=thread_id,
-                source_email_id=email.message_id,
-                status="awaiting_approval",
-                draft=draft_content,
-            )
-            reply_repo.upsert_by_key({"source_email_id": email.message_id}, draft.model_dump(mode="json"))
-        email_repo.set_stage(email.message_id, ProcessingStage.REPLY_PROCESSED.value)
-
-        detection = detect_meeting(email, thread_id, settings.timezone, email.timestamp)
-        action = build_calendar_action(detection, thread_id)
-        if action is not None:
-            calendar_repo.upsert_by_key(
-                {"thread_id": action.thread_id, "meeting_fingerprint": action.meeting_fingerprint},
-                action.model_dump(mode="json"),
-            )
-        email_repo.set_stage(email.message_id, ProcessingStage.MEETING_PROCESSED.value)
-
-        email_repo.set_stage(email.message_id, ProcessingStage.COMPLETED.value)
-        results.append(EmailResult(message_id=email.message_id, final_stage="COMPLETED"))
 
     completed_at = datetime.now(timezone.utc)
     summary = PipelineRunSummary(
