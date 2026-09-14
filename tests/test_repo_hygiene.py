@@ -20,7 +20,7 @@ def _iter_source_files():
             continue
         if any(part in _EXCLUDED_DIRS for part in path.parts):
             continue
-        if path.suffix in _SCAN_EXTENSIONS or path.name == ".env.example":
+        if path.suffix in _SCAN_EXTENSIONS or path.name in {".env.example", "Dockerfile"}:
             yield path
 
 

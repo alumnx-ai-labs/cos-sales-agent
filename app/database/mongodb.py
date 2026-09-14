@@ -5,7 +5,7 @@ from app.database.indexes import initialize_indexes
 
 
 def get_client(uri: str) -> MongoClient:
-    return MongoClient(uri)
+    return MongoClient(uri, serverSelectionTimeoutMS=5000)
 
 
 def get_database(client: MongoClient, name: str) -> Database:
