@@ -7,7 +7,7 @@ _FORBIDDEN_PATTERNS = [
     re.compile(r"C:\\Users\\", re.IGNORECASE),
     re.compile(r"/Users/[a-zA-Z0-9_.-]+"),
     re.compile(r"/home/[a-zA-Z0-9_.-]+"),
-    re.compile(r"sk-[A-Za-z0-9]{20,}"),
+    re.compile(r"sk-[A-Za-z0-9-]{20,}"),
 ]
 
 _SCAN_EXTENSIONS = {".py", ".md", ".yml", ".yaml", ".env.example", ".toml", ".txt"}

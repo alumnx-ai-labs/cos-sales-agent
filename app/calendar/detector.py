@@ -1,5 +1,6 @@
 import re
 from datetime import datetime, time, timedelta
+from zoneinfo import ZoneInfo
 
 from pydantic import BaseModel
 
@@ -67,6 +68,12 @@ def _parse_duration_minutes(body: str) -> int:
 
 def detect_meeting(email: Email, thread_id: str, tz_name: str, reference_now: datetime) -> MeetingDetectionResult:
     body = email.body
+    target_tz = ZoneInfo(tz_name)
+    # Weekday/date math ("next Tuesday", "tomorrow") must be relative to the target
+    # timezone's local date, not whatever tzinfo reference_now happens to carry (typically
+    # UTC for an email timestamp) -- otherwise a meeting near local midnight can resolve to
+    # the wrong calendar day, and the stored time would be off by the zone's UTC offset.
+    reference_local = reference_now.astimezone(target_tz)
 
     meeting_language_match = _MEETING_LANGUAGE.search(body)
 
@@ -101,12 +108,12 @@ def detect_meeting(email: Email, thread_id: str, tz_name: str, reference_now: da
         )
 
     if tomorrow_match:
-        target_date = (reference_now + timedelta(days=1)).date()
+        target_date = (reference_local + timedelta(days=1)).date()
     else:
         weekday = _WEEKDAYS[day_match.group(1).lower()]
-        target_date = _next_weekday(reference_now, weekday).date()
+        target_date = _next_weekday(reference_local, weekday).date()
 
-    start = datetime.combine(target_date, parsed_time, tzinfo=reference_now.tzinfo)
+    start = datetime.combine(target_date, parsed_time, tzinfo=target_tz)
     duration_minutes = _parse_duration_minutes(body)
     end = start + timedelta(minutes=duration_minutes)
 

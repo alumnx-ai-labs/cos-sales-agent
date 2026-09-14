@@ -116,12 +116,25 @@ python main.py --reset-demo
 Only permitted when `APP_ENV=development` or `SIMULATION_MODE=true`; clears demo data
 from every collection so a fresh `--mode=demo` run starts clean.
 
-## MCP Configuration (optional)
+## MCP Configuration (extension point, not ready-to-use)
 
-Set `MCP_EMAIL_ENABLED=true` / `MCP_CALENDAR_ENABLED=true` and `EMAIL_PROVIDER=mcp` /
-`CALENDAR_PROVIDER=mcp` to route through a connected MCP email/calendar server. The core
-pipeline has no dependency on MCP being available — `ProviderFactory` only imports the MCP
-adapter when explicitly selected, so an unconfigured MCP server never breaks demo/mock runs.
+`EMAIL_PROVIDER=mcp` / `CALENDAR_PROVIDER=mcp` are an **extension point**, not a
+pre-wired, zero-config integration: this codebase ships the `MCPEmailProvider` /
+`MCPCalendarProvider` adapter shape, but no connection to any specific mail or calendar
+server. Selecting `mcp` requires:
+
+1. Setting `MCP_EMAIL_ENABLED=true` / `MCP_CALENDAR_ENABLED=true` — `ProviderFactory`
+   raises a clear `ValueError` at startup if the corresponding provider is set to `mcp`
+   without its `*_ENABLED` flag, rather than constructing a provider that only fails
+   later on first use.
+2. Supplying your own MCP client instance to the adapter (e.g. by extending
+   `ProviderFactory` to construct `MCPEmailProvider(client=...)` /
+   `MCPCalendarProvider(client=...)`) — the adapters are constructed with `client=None` by
+   default and raise `RuntimeError` on first use until a real client is wired in.
+
+The core pipeline has no dependency on MCP being available — `ProviderFactory` only
+imports the MCP adapter module when explicitly selected, so an unconfigured MCP server
+never breaks demo/mock runs.
 
 ## LLM Configuration
 
@@ -134,6 +147,12 @@ use a real model instead of the deterministic mock.
   reply drafting, and meeting detection are fully automatic.
 - Sending an email and creating a calendar event always require explicit approval through
   the Streamlit UI.
+- In this version, an approved reply is always **simulated** — printed to the console and
+  marked `simulated_sent` — regardless of the `SIMULATION_MODE` setting; there is no
+  real-send code path wired into the approval flow yet (see `app/replies/approval.py`'s
+  `simulate_send`). `SIMULATION_MODE` currently only gates `--reset-demo` (it must be
+  `true`, or `APP_ENV=development`, for that command to run). A calendar event created via
+  an enabled MCP calendar provider is a real external action once approved.
 - Calendar events are created for the authenticated user only — external attendees
   (sender, customer, CC) can never be added; this is enforced by a Pydantic validator and
   a second check immediately before the calendar provider is called.

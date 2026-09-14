@@ -40,7 +40,7 @@ class EmailRepository(_BaseRepository):
                         "stage": stage,
                         "error": error,
                         "failed_stage": failed_stage,
-                        "updated_at": datetime.now(timezone.utc),
+                        "updated_at": datetime.now(timezone.utc).isoformat(),
                     }
                 }
             },

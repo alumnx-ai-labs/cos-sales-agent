@@ -17,4 +17,4 @@ class MCPCalendarProvider(CalendarProvider):
                 "provide a server connection"
             )
         assert event.attendees == [], "external attendees must never reach a calendar provider"
-        return self._client.create_event(event.model_dump())
+        return self._client.create_event(event.model_dump(mode="json"))

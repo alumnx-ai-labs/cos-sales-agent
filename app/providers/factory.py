@@ -17,6 +17,8 @@ class ProviderFactory:
 
             return MockEmailProvider(payloads=[])
         if provider == "mcp":
+            if not settings.mcp_email_enabled:
+                raise ValueError("EMAIL_PROVIDER=mcp requires MCP_EMAIL_ENABLED=true")
             from app.providers.email.mcp import MCPEmailProvider
 
             return MCPEmailProvider()
@@ -30,6 +32,8 @@ class ProviderFactory:
 
             return MockCalendarProvider()
         if provider == "mcp":
+            if not settings.mcp_calendar_enabled:
+                raise ValueError("CALENDAR_PROVIDER=mcp requires MCP_CALENDAR_ENABLED=true")
             from app.providers.calendar.mcp import MCPCalendarProvider
 
             return MCPCalendarProvider()

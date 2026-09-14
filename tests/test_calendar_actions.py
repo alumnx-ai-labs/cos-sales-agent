@@ -45,6 +45,22 @@ def test_build_calendar_action_for_needs_clarification():
     assert action.status == "needs_clarification"
 
 
+def test_build_calendar_action_placeholder_event_is_deterministic_given_reference_now():
+    # Regression: the needs_clarification placeholder event must be reproducible when given
+    # the same reference_now (e.g. email.timestamp), not wall-clock time -- otherwise the
+    # persisted document is non-deterministic across runs, in tension with DEMO_SEED=42.
+    detection = MeetingDetectionResult(meeting_detected=False, needs_clarification=True, missing_information=["date"])
+    reference_now = datetime(2026, 9, 13, 10, 30, tzinfo=timezone.utc)
+
+    action1 = build_calendar_action(detection, thread_id="thread_001", reference_now=reference_now)
+    action2 = build_calendar_action(detection, thread_id="thread_001", reference_now=reference_now)
+
+    assert action1.event.start == reference_now
+    assert action1.event.end == reference_now
+    assert action1.event.start == action2.event.start
+    assert action1.event.end == action2.event.end
+
+
 def test_build_calendar_action_returns_none_when_no_meeting():
     detection = MeetingDetectionResult(meeting_detected=False, needs_clarification=False)
     assert build_calendar_action(detection, thread_id="thread_001") is None

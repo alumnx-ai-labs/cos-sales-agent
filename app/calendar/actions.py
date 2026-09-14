@@ -10,12 +10,20 @@ def make_fingerprint(title: str, start: datetime, end: datetime) -> str:
     return f"{normalize_text(title).replace(' ', '_')}_{start.isoformat()}_{end.isoformat()}"
 
 
-def build_calendar_action(detection: MeetingDetectionResult, thread_id: str) -> CalendarAction | None:
+def build_calendar_action(
+    detection: MeetingDetectionResult, thread_id: str, reference_now: datetime | None = None
+) -> CalendarAction | None:
     if detection.needs_clarification:
+        # Default to datetime.now().astimezone() only for backward compatibility with any
+        # existing caller that doesn't pass reference_now. Callers that care about
+        # determinism (e.g. run_pipeline, given DEMO_SEED=42) should pass a stable
+        # reference_now (email.timestamp) so the persisted placeholder event is
+        # reproducible across runs instead of drifting with wall-clock time.
+        now = reference_now if reference_now is not None else datetime.now().astimezone()
         placeholder_event = CalendarEvent(
             title=detection.title or "Meeting (details pending)",
-            start=datetime.now().astimezone(),
-            end=datetime.now().astimezone(),
+            start=now,
+            end=now,
             timezone=detection.timezone or "UTC",
             description=detection.description or "Awaiting clarification from customer",
         )

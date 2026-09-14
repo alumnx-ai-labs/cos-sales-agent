@@ -20,6 +20,12 @@ class Settings(BaseSettings):
     llm_api_key: str = ""
     llm_model: str = ""
 
+    # The authenticated user's own mailbox. Emails sent FROM this address (e.g. the sales
+    # rep's own outbound messages in a two-sided thread) must never get a reply draft
+    # generated for them -- see app/pipeline.py's run_pipeline. Defaults to Task 14's demo
+    # sales rep address so the demo behaves correctly with zero configuration.
+    agent_email: str = "ashok@oursalesagent-demo.example"
+
     mcp_email_enabled: bool = False
     mcp_calendar_enabled: bool = False
 

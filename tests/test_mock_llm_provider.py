@@ -85,8 +85,19 @@ def test_update_context_merges_new_facts_and_tags_provenance():
 
 
 def test_verify_same_fact_uses_similarity():
+    # "100 seats" vs "approximately 100 users" never actually reaches Step 4 in the real
+    # pipeline: classify_fact_key already maps both to the single "seat_count" fact_key, so
+    # they collapse via Step 2's exact match before any fuzzy/LLM comparison happens. Use a
+    # pair that genuinely needs and exercises Step 4 instead -- two phrasings of the same
+    # non-attribute fact that rapidfuzz's token_sort_ratio scores at 88.46 (verified via
+    # rapidfuzz directly), comfortably above the 80 threshold.
     provider = MockLLMProvider()
-    assert provider.verify_same_fact("100 seats", "approximately 100 users", "ABC Corp", "requires") is True
+    assert (
+        provider.verify_same_fact(
+            "data migration concerns", "concerns about data migration", "ABC Corp", "has_pain_point"
+        )
+        is True
+    )
     assert provider.verify_same_fact("100 seats", "Salesforce integration", "ABC Corp", "requires") is False
 
 

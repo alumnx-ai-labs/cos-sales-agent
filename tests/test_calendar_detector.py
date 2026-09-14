@@ -1,4 +1,5 @@
-from datetime import datetime, timezone
+from datetime import datetime, timedelta, timezone
+from zoneinfo import ZoneInfo
 
 from app.calendar.detector import detect_meeting
 from app.email.models import parse_email
@@ -62,6 +63,22 @@ def test_no_meeting_language_returns_not_detected():
     )
     assert result.meeting_detected is False
     assert result.needs_clarification is False
+
+
+def test_meeting_time_uses_target_timezone_not_reference_tzinfo():
+    # Regression: "Let's meet Tuesday at 3 PM" for a non-UTC tz_name must be stored as
+    # 15:00 in that zone, not 15:00 UTC (which silently loses the zone's offset). Kolkata
+    # is UTC+5:30 with no DST, so the offset is exact and stable regardless of date.
+    result = detect_meeting(
+        _email("Let's meet Tuesday at 3 PM for 30 minutes."),
+        thread_id="thread_001",
+        tz_name="Asia/Kolkata",
+        reference_now=datetime(2026, 9, 13, tzinfo=timezone.utc),
+    )
+    assert result.start.utcoffset() == timedelta(hours=5, minutes=30)
+    assert result.start.tzinfo == ZoneInfo("Asia/Kolkata")
+    assert result.start.hour == 15
+    assert result.start.minute == 0
 
 
 def test_ambiguous_phrase_with_coincidental_day_and_time_does_not_fabricate_meeting():

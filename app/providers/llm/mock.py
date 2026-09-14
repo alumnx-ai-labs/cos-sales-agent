@@ -16,7 +16,14 @@ _BUYING_SIGNAL_PATTERNS = [
     (re.compile(r"\bprocurement\b", re.IGNORECASE), "procurement request"),
 ]
 _SEAT_PATTERN = re.compile(r"\b(\d+)\s*(seats?|users?|licen[sc]es?)\b", re.IGNORECASE)
-_SAME_FACT_SIMILARITY_THRESHOLD = 40
+# Step 4 (deduplication.py) only calls this for pairs rapidfuzz's token_sort_ratio already
+# scored in the 60-90 "ambiguous band". 40 used to accept almost everything in that band,
+# which wrongly merged genuinely distinct facts observed in the demo dataset -- e.g.
+# "pricing request" vs "proposal request" and "demo request" vs "procurement request" both
+# score 64.52, yet are different buying signals. 80 rejects both of those (a ~15-point
+# margin) while still accepting real same-fact paraphrases such as "data migration
+# concerns" vs "concerns about data migration" (88.46).
+_SAME_FACT_SIMILARITY_THRESHOLD = 80
 
 
 class MockLLMProvider(LLMProvider):

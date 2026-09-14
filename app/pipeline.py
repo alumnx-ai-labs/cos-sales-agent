@@ -239,7 +239,13 @@ def run_pipeline(
             email_repo.set_stage(email.message_id, ProcessingStage.KNOWLEDGE_PROCESSED.value)
 
             current_stage = ProcessingStage.REPLY_PROCESSED
-            if needs_reply(analysis, email):
+            # email.from_.email is already lowercased by normalize_email; lowercase
+            # settings.agent_email too so the comparison is case-insensitive regardless of
+            # how the operator wrote it in .env. An email FROM our own mailbox (e.g. the
+            # sales rep's own outbound message in a two-sided demo thread) must never get a
+            # reply draft generated for it.
+            is_from_agent = email.from_.email.lower() == settings.agent_email.lower()
+            if not is_from_agent and needs_reply(analysis, email):
                 reply_key = {"source_email_id": email.message_id}
                 # A reply draft may already exist for this email (e.g. a human
                 # already approved/edited/sent it after an earlier partial run).
@@ -258,7 +264,7 @@ def run_pipeline(
 
             current_stage = ProcessingStage.MEETING_PROCESSED
             detection = detect_meeting(email, thread_id, settings.timezone, email.timestamp)
-            action = build_calendar_action(detection, thread_id)
+            action = build_calendar_action(detection, thread_id, reference_now=email.timestamp)
             if action is not None:
                 calendar_key = {
                     "thread_id": action.thread_id,
@@ -274,13 +280,14 @@ def run_pipeline(
             email_repo.set_stage(email.message_id, ProcessingStage.COMPLETED.value)
             results.append(EmailResult(message_id=email.message_id, final_stage="COMPLETED"))
         except Exception as exc:  # noqa: BLE001 - deliberately broad: any provider/stage failure must not crash the batch
+            error_detail = f"{type(exc).__name__}: {exc}"
             email_repo.set_stage(
                 email.message_id,
                 ProcessingStage.FAILED.value,
-                error=str(exc),
+                error=error_detail,
                 failed_stage=current_stage.value,
             )
-            results.append(EmailResult(message_id=email.message_id, final_stage="FAILED", error=str(exc)))
+            results.append(EmailResult(message_id=email.message_id, final_stage="FAILED", error=error_detail))
             continue
 
     completed_at = datetime.now(timezone.utc)

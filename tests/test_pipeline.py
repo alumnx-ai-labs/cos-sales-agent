@@ -281,6 +281,28 @@ def test_pipeline_does_not_overwrite_already_scheduled_calendar_action(db, setti
     assert db.calendar_actions.count_documents({}) == 1
 
 
+def test_pipeline_never_drafts_reply_for_email_from_agents_own_address(db, settings):
+    # Regression: a two-sided thread (customer + our own sales rep both sending emails)
+    # must never produce a reply draft addressed back to our own rep for our own outbound
+    # email. settings.agent_email defaults to Task 14's demo sales rep address.
+    agent_settings = settings.model_copy(update={"agent_email": "ashok@oursalesagent-demo.example"})
+    payloads = [
+        _raw_email(
+            "msg_001",
+            "Happy to walk you through the enterprise plan. Could you tell me what's not "
+            "working well with your current process?",
+            **{"from": {"name": "Ashok Kumar", "email": "Ashok@OurSalesAgent-Demo.example"}},
+        ),
+    ]
+    run_pipeline(
+        db, _ListEmailProvider(payloads), MockLLMProvider(), MockCalendarProvider(), agent_settings
+    )
+
+    stored_email = db.emails.find_one({"message_id": "msg_001"})
+    assert stored_email["processing_status"]["stage"] == "COMPLETED"
+    assert db.reply_drafts.count_documents({}) == 0
+
+
 def test_pipeline_keeps_knowledge_subject_key_stable_as_company_name_becomes_known(db, settings):
     payloads = [
         _raw_email("msg_001", "We currently use Salesforce but pricing is a pain point."),
