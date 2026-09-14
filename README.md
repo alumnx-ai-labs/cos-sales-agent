@@ -183,6 +183,75 @@ anywhere in the source — everything environment-specific comes from `.env`. Th
 should run unmodified after cloning to another Windows, macOS, or Linux machine, provided
 Docker and Python 3.11+ are available.
 
+## Claude Desktop MCP Integration
+
+This project can run as a local MCP server that Claude Desktop calls directly. Claude
+Desktop's built-in Gmail connector handles all Gmail reading and sending; this server only
+ever runs the existing pipeline (analysis, context, knowledge extraction/deduplication,
+meeting detection, reply drafting) against whatever email Claude hands it, and persists the
+result to your local MongoDB. It never talks to Gmail, the Gmail API, or any OAuth flow, and
+it never creates a real calendar event.
+
+### Prerequisites
+
+- MongoDB running locally (see the MongoDB section above)
+- `.env` configured with a real LLM provider, since the MCP tool uses `ClaudeProvider`:
+
+```env
+LLM_PROVIDER=claude
+LLM_API_KEY=<your Anthropic API key>
+LLM_MODEL=claude-sonnet-5
+```
+
+### Install
+
+```powershell
+pip install -r requirements.txt
+```
+
+### Register the server with Claude Desktop
+
+Add this to Claude Desktop's `claude_desktop_config.json` (Windows:
+`%APPDATA%\Claude\claude_desktop_config.json`):
+
+```json
+{
+  "mcpServers": {
+    "cos-sales-agent": {
+      "command": "C:\\path\\to\\cos-sales-agent\\.venv\\Scripts\\python.exe",
+      "args": ["-m", "app.mcp.server"],
+      "cwd": "C:\\path\\to\\cos-sales-agent"
+    }
+  }
+}
+```
+
+Replace both paths with your actual project location, then restart Claude Desktop. The
+server starts automatically as a subprocess Claude Desktop manages — there is no separate
+"run the server" step.
+
+### What the `process_email` tool does
+
+Given one email's fields (sender, recipients, subject, body, timestamp, message id), it
+runs the full pipeline and returns:
+- a running summary of what's known about the thread so far
+- deduplicated sales knowledge extracted from the thread
+- a proposed reply draft (if one is warranted) — for Claude to send via its own Gmail
+  connector, under Claude's normal approval prompt
+- a proposed meeting time (if detected) — informational only; no calendar event is ever
+  created by this tool
+
+### Manual verification
+
+```powershell
+$env:PYTHONPATH = (Get-Location).Path
+mcp dev app/mcp/server.py
+```
+
+Opens the MCP Inspector in your browser. Under the "Tools" tab you should see
+`process_email` with its full input schema; you can invoke it there with a sample email
+payload and confirm new documents appear in your local `cos_sales` MongoDB database.
+
 ## Troubleshooting
 
 - **MongoDB connection refused**: confirm `docker compose up -d` succeeded and
