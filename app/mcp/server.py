@@ -1,0 +1,62 @@
+# app/mcp/server.py
+from functools import lru_cache
+from typing import Any
+
+from mcp.server.fastmcp import FastMCP
+
+from app.config.settings import get_settings
+from app.database.mongodb import get_client, initialize_database
+from app.email.models import Email
+from app.interfaces.calendar_provider import CalendarProvider
+from app.interfaces.llm_provider import LLMProvider
+from app.mcp import tools
+from app.providers.factory import ProviderFactory
+
+
+@lru_cache
+def _get_db():
+    settings = get_settings()
+    return initialize_database(get_client(settings.mongodb_uri), settings.mongodb_database)
+
+
+@lru_cache
+def _get_llm_provider() -> LLMProvider:
+    return ProviderFactory.create_llm_provider(get_settings())
+
+
+@lru_cache
+def _get_calendar_provider() -> CalendarProvider:
+    return ProviderFactory.create_calendar_provider(get_settings())
+
+
+mcp = FastMCP("cos-sales-agent")
+
+
+@mcp.tool()
+def process_email(email: Email) -> dict[str, Any]:
+    """Run one Gmail message through the sales-agent pipeline: normalization, thread
+    resolution, LLM analysis, cumulative context, knowledge extraction/deduplication,
+    meeting detection, and reply drafting. Persists everything to MongoDB. Returns
+    structured results -- including a proposed reply draft and/or meeting proposal for
+    you to review and act on via your Gmail connector. Never sends email or creates
+    calendar events itself.
+
+    Map Gmail fields into the input shape as follows:
+    - message_id: Gmail message id (or Message-ID header)
+    - thread_id: Gmail thread id, if available (omit if unknown -- the pipeline will
+      infer one)
+    - from/to/cc: {"name": ..., "email": ...} objects
+    - timestamp: ISO-8601 datetime string
+    - in_reply_to / references: Message-ID header values, if available
+    """
+    return tools.process_email(
+        _get_db(), email, _get_llm_provider(), _get_calendar_provider(), get_settings()
+    )
+
+
+def main() -> None:
+    mcp.run()
+
+
+if __name__ == "__main__":
+    main()
