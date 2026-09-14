@@ -57,6 +57,25 @@ This starts MongoDB on `localhost:27017` and Mongo Express (a MongoDB inspection
 `http://localhost:8081`. Collections and indexes are created automatically by the
 application on startup — no manual MongoDB setup is required.
 
+### Running Without Docker (Windows, no admin rights)
+
+Docker is used for exactly one thing in this project: giving you a MongoDB instance at
+`localhost:27017` (Mongo Express is an optional inspection UI — the Streamlit dashboard
+already covers that). If Docker/WSL/Hyper-V aren't available (e.g. a locked-down office
+laptop), run MongoDB directly instead — no installer, no Windows service, no admin rights:
+
+```powershell
+.\run-mongodb-local.ps1
+```
+
+This downloads the official MongoDB Community Server **ZIP** build (not the MSI
+installer — the MSI is the one that needs admin rights to register a service) into
+`%USERPROFILE%\mongodb`, and starts `mongod.exe` as a normal foreground process bound to
+`127.0.0.1:27017`. Leave that terminal window open while you use the app. Everything else
+— `.env`, `python main.py --healthcheck`, `--mode=demo`, the Streamlit dashboard — works
+completely unchanged, since the app only ever talks to `MONGODB_URI` and doesn't know or
+care whether MongoDB came from Docker or a local `mongod.exe`.
+
 ## Environment Configuration
 
 Edit `.env` (copied from `.env.example`). Defaults already run the full demo with zero
