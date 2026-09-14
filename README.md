@@ -201,6 +201,8 @@ it never creates a real calendar event.
 LLM_PROVIDER=claude
 LLM_API_KEY=<your Anthropic API key>
 LLM_MODEL=claude-sonnet-5
+TIMEZONE=America/New_York       # meeting proposals are resolved as wall-clock times in this zone
+AGENT_EMAIL=you@yourdomain.com  # your own mailbox; no reply draft is generated for mail sent from this address
 ```
 
 ### Install

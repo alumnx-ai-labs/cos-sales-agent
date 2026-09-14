@@ -107,3 +107,20 @@ def test_process_email_returns_failed_status_with_error_on_analysis_failure(db, 
     assert result["knowledge"] == []
     assert result["reply_draft"] is None
     assert result["calendar_proposal"] is None
+
+
+def test_process_email_returns_failed_status_when_email_limit_yields_no_result(db):
+    settings = Settings(calendar_provider="mock", llm_provider="mock", email_limit=0)
+    email = parse_email(_raw_email("msg_001", "Some body text."))
+
+    result = process_email(db, email, MockLLMProvider(), MockCalendarProvider(), settings)
+
+    assert result == {
+        "status": "failed",
+        "error": "pipeline produced no result for this email",
+        "thread_id": None,
+        "context_summary": None,
+        "knowledge": [],
+        "reply_draft": None,
+        "calendar_proposal": None,
+    }

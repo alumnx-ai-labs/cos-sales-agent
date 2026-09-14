@@ -40,6 +40,10 @@ def process_email(
     raw = email.model_dump(mode="json", by_alias=True)
     provider = MockEmailProvider(payloads=[raw])
     summary = run_pipeline(db, provider, llm_provider, calendar_provider, settings)
+
+    if not summary.results:
+        return _empty_result("failed", "pipeline produced no result for this email")
+
     result = summary.results[0]
 
     if result.final_stage == "FAILED":
