@@ -679,6 +679,19 @@ def test_resolve_date_phrase_recognizes_next_month_explicitly_as_window():
     resolved, date_type = resolve_date_phrase("We should meet sometime next month.", _NOW)
     assert resolved is None
     assert date_type == "window"
+
+
+def test_resolve_date_phrase_explicit_date_on_the_same_day_does_not_roll_to_next_year():
+    # A same-day reference ("June 5th" sent on June 5th at 2pm) must resolve to THIS
+    # year's June 5th, not next year's -- comparing full timestamps (candidate normalized
+    # to midnight vs. reference_now's real time-of-day) would wrongly treat today as
+    # "already passed" and roll forward a year.
+    reference = datetime(2026, 6, 5, 14, 0, tzinfo=timezone.utc)
+    resolved, date_type = resolve_date_phrase("by June 5th", reference)
+    assert date_type == "stated"
+    assert resolved.year == 2026
+    assert resolved.month == 6
+    assert resolved.day == 5
 ```
 
 Add this import at the top of `tests/test_entities_dates.py`, alongside the existing
@@ -813,7 +826,12 @@ def resolve_date_phrase(
         day = int(explicit_match.group(2))
         year = reference_now.year
         candidate = reference_now.replace(year=year, month=month, day=day, hour=0, minute=0, second=0, microsecond=0)
-        if candidate < reference_now:
+        # Compare dates, not full timestamps: an email sent on June 5th referencing
+        # "June 5th" means today, not next year. Comparing candidate < reference_now
+        # (full precision) would incorrectly roll same-day references forward a year,
+        # since candidate is normalized to midnight and reference_now carries a real
+        # time-of-day that is almost always later than midnight.
+        if candidate.date() < reference_now.date():
             candidate = candidate.replace(year=year + 1)
         return candidate, "stated"
 
@@ -846,7 +864,7 @@ outcome is identical either way; it only needs to be in `_DATE_PHRASE_PATTERNS` 
 - [ ] **Step 5: Run tests to verify they pass**
 
 Run: `pytest tests/test_entities_extraction.py tests/test_entities_dates.py -v`
-Expected: PASS (16 tests: 4 extraction + 12 dates)
+Expected: PASS (17 tests: 4 extraction + 13 dates)
 
 - [ ] **Step 6: Run the full existing test suite to confirm nothing else broke**
 
