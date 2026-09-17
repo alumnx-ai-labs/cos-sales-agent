@@ -2,6 +2,7 @@
 from datetime import datetime
 from typing import Any
 
+from pydantic import TypeAdapter
 from pymongo.database import Database
 
 from app.database.repositories import (
@@ -15,6 +16,12 @@ from app.database.repositories import (
 from app.entities.ids import next_id
 from app.entities.models import Commitment, FollowUp, Meeting, Person, PersonalItem, Project
 from app.knowledge.normalize import normalize_text
+
+# Serializes a datetime exactly the way Person.model_dump(mode="json") would (e.g. a
+# tz-aware UTC value as "...Z", not datetime.isoformat()'s "...+00:00"), without assuming
+# `now` is guaranteed UTC-aware -- so the update path below matches the creation path's
+# format regardless of what tzinfo (or lack of one) `now` actually carries.
+_DATETIME_JSON = TypeAdapter(datetime)
 
 
 def _parse_iso(value: str | None) -> datetime | None:
@@ -42,9 +49,9 @@ def resolve_person(
         if existing:
             update: dict[str, Any] = {}
             if is_sender is True:
-                update["last_inbound"] = now.isoformat()
+                update["last_inbound"] = _DATETIME_JSON.dump_python(now, mode="json")
             elif is_sender is False:
-                update["last_outbound"] = now.isoformat()
+                update["last_outbound"] = _DATETIME_JSON.dump_python(now, mode="json")
             if update:
                 repo.upsert_by_key({"id": existing["id"]}, {**existing, **update})
             return existing["id"]

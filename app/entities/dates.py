@@ -68,14 +68,22 @@ def resolve_date_phrase(
         month = _MONTHS[explicit_match.group(1).lower()[:3]]
         day = int(explicit_match.group(2))
         year = reference_now.year
-        candidate = reference_now.replace(year=year, month=month, day=day, hour=0, minute=0, second=0, microsecond=0)
-        # Compare dates, not full timestamps: an email sent on June 5th referencing
-        # "June 5th" means today, not next year. Comparing candidate < reference_now
-        # (full precision) would incorrectly roll same-day references forward a year,
-        # since candidate is normalized to midnight and reference_now carries a real
-        # time-of-day that is almost always later than midnight.
-        if candidate.date() < reference_now.date():
-            candidate = candidate.replace(year=year + 1)
+        try:
+            candidate = reference_now.replace(
+                year=year, month=month, day=day, hour=0, minute=0, second=0, microsecond=0
+            )
+            # Compare dates, not full timestamps: an email sent on June 5th referencing
+            # "June 5th" means today, not next year. Comparing candidate < reference_now
+            # (full precision) would incorrectly roll same-day references forward a year,
+            # since candidate is normalized to midnight and reference_now carries a real
+            # time-of-day that is almost always later than midnight.
+            if candidate.date() < reference_now.date():
+                candidate = candidate.replace(year=year + 1)
+        except ValueError:
+            # day is not valid for month/year (e.g. "June 45th", "Feb 30") -- a date was
+            # clearly mentioned but can't be pinned to a specific day, so fall back to the
+            # same "window" semantic used for other unresolvable-but-present date phrases.
+            return None, "window"
         return candidate, "stated"
 
     if _TOMORROW_PATTERN.search(phrase):

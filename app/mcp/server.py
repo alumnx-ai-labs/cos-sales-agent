@@ -62,6 +62,12 @@ def list_processed_emails(limit: int = 50) -> list[dict[str, Any]]:
     Gmail directly. Each entry includes message_id, thread_id, from/to/cc, subject,
     timestamp, processing_status, the thread's current summary, and a body_preview
     truncated to about 150 characters. The full email body is never returned.
+
+    Each entry also includes record_id, source_type, source_link, date, goal_pillar,
+    label_applied, confidence, and entities_referenced (a dict of people/projects/
+    commitments/follow_ups/meetings/personal id lists) -- these are populated once the
+    email reaches the ENTITIES_PROCESSED stage, and are None (or empty lists, for
+    entities_referenced) for an email that hasn't gotten there yet.
     """
     return tools.list_processed_emails(_get_db(), limit)
 

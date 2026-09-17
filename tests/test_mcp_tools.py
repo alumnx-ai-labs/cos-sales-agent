@@ -202,3 +202,39 @@ def test_list_processed_emails_includes_entity_metadata(db, settings):
     assert entry["label_applied"] in {"Needs reply: ASAP", "Read only"}
     assert isinstance(entry["confidence"], float)
     assert len(entry["entities_referenced"]["people"]) == 1
+
+
+def test_list_processed_emails_defaults_entity_fields_when_email_never_reached_that_stage(db, settings):
+    # An email that fails before ENTITIES_PROCESSED (or any pre-existing email document
+    # from before this feature existed) has none of the 8 entity-metadata keys. Direct
+    # key access on any of them would raise KeyError and crash the whole tool call,
+    # hiding every email, not just the broken one.
+    process_email(
+        db,
+        parse_email(_raw_email("msg_001", "Some body text.")),
+        _AlwaysBrokenLLM(),
+        MockCalendarProvider(),
+        settings,
+    )
+
+    results = list_processed_emails(db, limit=50)
+
+    assert len(results) == 1
+    entry = results[0]
+    assert entry["message_id"] == "msg_001"
+    assert entry["processing_status"]["stage"] == "FAILED"
+    assert entry["record_id"] is None
+    assert entry["source_type"] is None
+    assert entry["source_link"] is None
+    assert entry["date"] is None
+    assert entry["goal_pillar"] is None
+    assert entry["label_applied"] is None
+    assert entry["confidence"] is None
+    assert entry["entities_referenced"] == {
+        "people": [],
+        "projects": [],
+        "commitments": [],
+        "follow_ups": [],
+        "meetings": [],
+        "personal": [],
+    }

@@ -60,6 +60,13 @@ def run_reset_demo(db, settings) -> None:
         "entities",
         "opportunities",
         "activities",
+        "people",
+        "projects",
+        "commitments",
+        "follow_ups",
+        "meetings",
+        "personal_items",
+        "counters",
     ]:
         db[collection_name].delete_many({})
 

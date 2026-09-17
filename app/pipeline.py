@@ -137,7 +137,7 @@ def _process_knowledge(
 
 
 def _process_entities(
-    db,
+    db: Database,
     thread_id: str,
     email: Email,
     analysis: EmailAnalysis,
@@ -169,13 +169,11 @@ def _process_entities(
         )
         entities_referenced["people"].append(person_id)
 
-    project_id_by_name: dict[str, str] = {}
     for mention in analysis.projects_mentioned:
         project_id = resolve_project(
             db, {"name": mention.name, "org": mention.org}, goal_pillar=analysis.goal_pillar
         )
         entities_referenced["projects"].append(project_id)
-        project_id_by_name[mention.name] = project_id
 
     # FollowUps are derived ONLY from a resolved Commitment (spec S5.1.1 correction) --
     # a Meeting or PersonalItem NEVER triggers a FollowUp by itself, no matter how
@@ -220,7 +218,7 @@ def _process_entities(
         )
         entities_referenced["personal"].append(item_id)
 
-    return entities_referenced
+    return {key: list(dict.fromkeys(ids)) for key, ids in entities_referenced.items()}
 
 
 def run_pipeline(

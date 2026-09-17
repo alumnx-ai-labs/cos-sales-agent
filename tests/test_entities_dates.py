@@ -81,6 +81,16 @@ def test_resolve_date_phrase_recognizes_next_month_explicitly_as_window():
     assert date_type == "window"
 
 
+def test_resolve_date_phrase_falls_back_to_window_for_invalid_day_of_month():
+    # "June 45th" and "Feb 30" are plausible substrings of real email prose -- not
+    # adversarial input -- and datetime.replace(day=...) raises ValueError for either.
+    # A date was clearly mentioned but can't be pinned to a specific day, so this must
+    # fall back to the same (None, "window") semantic as any other unresolvable phrase,
+    # not raise and fail the whole email.
+    assert resolve_date_phrase("by June 45th", _NOW) == (None, "window")
+    assert resolve_date_phrase("by Feb 30", _NOW) == (None, "window")
+
+
 def test_find_date_phrase_returns_first_recognized_expression():
     # The weekday pattern matches only the weekday word itself, not a preceding "next" --
     # resolve_date_phrase always computes the *next* occurrence of that weekday regardless,
