@@ -10,7 +10,20 @@ _ANALYSIS_INSTRUCTIONS = (
     "You are a sales email analyst. Given the email below, return ONLY a JSON object with keys: "
     "summary, intent, entities, facts (list of {subject,predicate,object}), requirements, pain_points, "
     "buying_signals, objections, competitors, pricing_mentions, commitments, action_items, meetings, "
-    "people, companies, products. Use empty lists/strings for anything not present. No prose, JSON only."
+    "people, companies, products, "
+    "people_mentioned (list of {name, email, org, role_hint} for each person mentioned or corresponding), "
+    "projects_mentioned (list of {name, org, objective_hint}), "
+    "commitments_mentioned (list of {what, class: one of mine/owed_to_me/theirs/recap, owed_by, owed_to, "
+    "date_phrase (the raw text phrase describing when, e.g. 'next Friday' -- never a resolved date), "
+    "importance_hint}), "
+    "meetings_mentioned (list of {date_phrase, attendees, is_past, actions_raised}), "
+    "personal_items_mentioned (list of {item_type, description, date_phrase}), "
+    "goal_pillar (a short label for which business goal this relates to, e.g. 'Sales'), "
+    "label_applied (exactly one of: 'Needs reply: ASAP', 'Needs reply: Soon', 'Read only', 'Delete', "
+    "'Undecided'), confidence (0.0-1.0). "
+    "Do not invent or assign any canonical entity ID yourself; only describe what you observe in the email. "
+    "Entity ID assignment is handled separately by the system. "
+    "Use empty lists/strings for anything not present. No prose, JSON only."
 )
 
 
