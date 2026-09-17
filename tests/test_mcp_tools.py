@@ -180,3 +180,25 @@ def test_list_processed_emails_respects_limit(db, settings):
 
     assert len(results) == 2
     assert [r["message_id"] for r in results] == ["msg_002", "msg_001"]
+
+
+def test_list_processed_emails_includes_entity_metadata(db, settings):
+    process_email(
+        db,
+        parse_email(_raw_email("1a08090646ebaa45", "I will send the proposal on Friday.")),
+        MockLLMProvider(),
+        MockCalendarProvider(),
+        settings,
+    )
+
+    results = list_processed_emails(db, limit=50)
+
+    entry = results[0]
+    assert entry["record_id"] == "1a08090646ebaa45"
+    assert entry["source_type"] == "gmail"
+    assert entry["source_link"] == "https://mail.google.com/mail/u/0/#all/1a08090646ebaa45"
+    assert entry["date"] == "2026-09-13"
+    assert entry["goal_pillar"] == "Sales"
+    assert entry["label_applied"] in {"Needs reply: ASAP", "Read only"}
+    assert isinstance(entry["confidence"], float)
+    assert len(entry["entities_referenced"]["people"]) == 1

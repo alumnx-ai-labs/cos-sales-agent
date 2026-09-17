@@ -130,6 +130,14 @@ def list_processed_emails(db: Database, limit: int = 50) -> list[dict[str, Any]]
                 },
                 "summary": summary_by_thread_id.get(thread_id),
                 "body_preview": email["body"][:_BODY_PREVIEW_LENGTH],
+                "record_id": email["record_id"],
+                "source_type": email["source_type"],
+                "source_link": email["source_link"],
+                "date": email["date"],
+                "entities_referenced": email["entities_referenced"],
+                "goal_pillar": email["goal_pillar"],
+                "label_applied": email["label_applied"],
+                "confidence": email["confidence"],
             }
         )
 
