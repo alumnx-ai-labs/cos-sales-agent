@@ -153,11 +153,19 @@ set per record.
 
 ### 4.6 `meetings`
 
-`id, date, attendees, project_or_pillar, minutes_record, actions_raised, next_meeting_date, agenda_target, agenda_written`
+`id, date, attendees, project_or_pillar, minutes_record, actions_raised, next_meeting_date, agenda_target, agenda_written, actionable`
 
 Distinct from the existing `calendar_actions` collection (see §2 of the prior design
 discussion, restated in §10.4 below) — this is a record of a meeting the email *talks
 about* (minutes, actions raised), not a proposal to schedule one.
+
+`actionable: bool` is the **one field added by the relative-date meeting/action
+requirement** (§5.4) — the only new field this change introduces, and explicitly
+justified by that requirement: it distinguishes a future-oriented meeting mention ("we
+will meet in 2 weeks") from a historical one ("we met last week"), which nothing else in
+this schema could otherwise represent. `actionable = not raw_meeting.is_past` — true
+whenever the LLM did not flag the mention as past-tense, regardless of whether a precise
+date or only a vague window was resolved.
 
 ### 4.7 `personal_items`
 
@@ -221,6 +229,55 @@ Pure functions, no side effects:
 Deterministic extraction does **not** attempt to recognize a person's name mentioned only
 in body prose (e.g. "our VP of Sales, Sarah") — that requires semantic understanding and is
 explicitly the LLM stage's job, not regex's.
+
+**Reference date, corrected:** date-phrase resolution (and a `Commitment`'s `made_on`) use
+the *email's own* `timestamp` as the reference point — not wall-clock "now" at processing
+time — matching the existing `detect_meeting`'s established pattern
+(`app/calendar/detector.py:69`, called with `email.timestamp` from `app/pipeline.py`,
+untouched by this feature). An earlier draft of this spec incorrectly used
+`datetime.now(timezone.utc)`; corrected here before implementation.
+
+`app/entities/dates.py` additionally exposes `find_date_phrase(text: str) -> str | None`,
+scanning a body for the first recognizable date-related expression (explicit date,
+"tomorrow", a weekday, a relative duration like "in 2 weeks"/"in 10 days", or a vague
+window like "next month") and returning the matched substring verbatim. This is the single
+source of date-phrase patterns — `MockLLMProvider` calls it directly (§5.2) rather than
+maintaining a second, divergent set of regexes, so the phrase a mention carries and the
+phrase `resolve_date_phrase` later resolves are guaranteed to come from the same pattern
+set.
+
+### 5.1.1 Relative-Date Meeting/Action Detection (added requirement)
+
+`resolve_date_phrase` gains two additional recognized forms, in this priority order after
+the existing explicit-date/tomorrow/weekday checks:
+
+1. **Relative duration** — `"in {N} day(s)/week(s)"`, where `{N}` is a digit or a spelled
+   number word ("two", "ten", ...) — resolves to `reference_now + timedelta(days=N or N*7)`,
+   classified `inferred`. Example: email dated 2026-09-17, phrase "in 2 weeks" →
+   2026-10-01.
+2. **Vague window** — `"next month"`, `"sometime"`, `"end of (the) month"` — recognized
+   explicitly (not merely falling through to an unnamed default) but resolves to `(None,
+   "window")`, exactly like the existing generic vague-phrase handling.
+
+**Meeting/action intent no longer requires an explicit calendar invitation.** The trigger
+vocabulary is broadened from `meet|call|sync` to also recognize the noun forms
+`meeting|meetings` and the phrase `catch up` — "The meeting is in 10 days" and "Let's catch
+up in 10 days" must be detected, not only imperative "let's meet" phrasing.
+
+**Historical mentions must not be treated as actionable.** `RawMeeting.is_past` (already
+part of the schema, previously unused by resolution) now drives the new
+`Meeting.actionable` field (§4.6): `actionable = not is_past`. For `MockLLMProvider`
+specifically, "we met last week" is additionally never even recognized as a meeting
+mention at all, because its trigger pattern matches the word "meet", not "met" — a second,
+independent reason the historical case produces no actionable signal, on top of the
+`is_past` mechanism a real LLM would set.
+
+**Correction to the FollowUp rule (§6):** an earlier draft of this spec had `_process_entities`
+create a thread-scoped `FollowUp` automatically whenever a meeting or personal item existed
+with no commitment. That directly contradicts the already-approved principle that a
+`FollowUp` is only ever derived from a resolved `Commitment` — it is removed before
+implementation. A `Meeting` (actionable or not) never causes a `FollowUp` to be created by
+itself.
 
 ### 5.2 LLM semantic extraction
 
@@ -295,7 +352,7 @@ the LLM. This is the **only** place a canonical ID is assigned or matched.
 | **Commitment** | Exact match within the same `thread_id`: normalized `what` text + same `class` + same `committed_date`. Compared in Python against the thread's existing commitments (same approach as `app/knowledge/deduplication.py`'s exact-match step) — no new derived field persisted for this. | Create a new `Commitment`. |
 | **Meeting** | Exact match within the same `thread_id` + same `date`. | Create a new `Meeting`. |
 | **PersonalItem** | Exact match within the same sender email + normalized `description`. | Create a new `PersonalItem`. |
-| **FollowUp** | Derived 1:1 immediately after a `Commitment` resolves — `commitment_id` set to that commitment's id, `thread_id` left `None`. If a meeting/personal item needs a follow-up with no specific commitment, `thread_id` is set instead and `commitment_id` left `None`. Not independently deduplicated (it inherits idempotency from its commitment). | N/A |
+| **FollowUp** | Derived 1:1, **only** immediately after a `Commitment` resolves — `commitment_id` set to that commitment's id, `thread_id` left `None`. **A `Meeting` or `PersonalItem` never triggers a `FollowUp` by itself**, regardless of `actionable` status (see §5.1.1 correction) — the schema still permits a `thread_id`-only `FollowUp` for a future, deliberately-invoked case, but no code path in this pipeline creates one automatically today. Not independently deduplicated (it inherits idempotency from its commitment). | N/A |
 
 No entity type ever performs a fuzzy-then-LLM-tiebreak resolution (unlike the existing
 `knowledge_items` dedup) — every resolution above is fully deterministic.
@@ -397,6 +454,12 @@ this is a follow-up update once resolution completes, called from the new pipeli
 - MongoDB indexes: `people.email` is a sparse unique index (two Persons with no email can
   coexist; two Persons cannot share the same non-null email); every new collection has a
   unique index on `id`.
+- Relative-date meeting/action detection (§5.1.1): each of "we will meet in 2 weeks",
+  "let's meet next Friday", "we can meet tomorrow", "the meeting is in 10 days" resolves a
+  correct date/date-type and `actionable=true`; a meeting mention with zero commitments
+  present still resolves correctly; an email containing both a commitment and a
+  relative-date meeting produces both entities with exactly one `FollowUp` (from the
+  commitment only); "we met last week" produces no actionable meeting signal.
 
 ## 12. Explicit Design Decisions / Assumptions (flagged, not unilateral)
 
