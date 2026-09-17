@@ -20,6 +20,9 @@
 - Project: exact normalized name + same `entity` + same `goal_pillar` → merge. `entity` alone is never sufficient. No fuzzy tier, no `review_flag` on Project (not in its spec'd field list).
 - Commitment/Meeting/PersonalItem: exact natural-key match only (thread + normalized text + date, or sender + normalized description) — compared in Python against existing records, no new derived field persisted for this.
 - FollowUp model is exactly `id, commitment_id, thread_id` — nothing else.
+- A `FollowUp` is derived **only** from a resolved `Commitment`. A `Meeting` or `PersonalItem` — actionable or not — never creates a `FollowUp` by itself.
+- `Meeting` gains exactly one new field beyond its original spec'd list: `actionable: bool`, set as `not raw_meeting.is_past`. No other new fields on any entity.
+- Date-phrase resolution (and a `Commitment`'s `made_on`) uses the email's own `timestamp` as the reference point — never wall-clock `datetime.now()` — matching the existing `detect_meeting`'s pattern.
 - `source_link` is only set when `message_id` matches `^[0-9a-f]{16}$`; otherwise `None`.
 - No changes to `knowledge_items`/`context_snapshots` logic (`_process_knowledge`/`build_next_context` untouched), `reply_drafts`/`calendar_actions` logic (`needs_reply`/`draft_reply`/`detect_meeting`/`build_calendar_action` untouched), or any existing test's expected behavior.
 - Every existing test must still pass after each task.
@@ -230,6 +233,12 @@ def test_meeting_defaults():
     assert meeting.attendees == []
     assert meeting.actions_raised == []
     assert meeting.agenda_written is False
+    assert meeting.actionable is False
+
+
+def test_meeting_actionable_can_be_set_true():
+    meeting = Meeting(id="MTG-002", actionable=True)
+    assert meeting.actionable is True
 
 
 def test_personal_item_defaults():
@@ -330,6 +339,7 @@ class Meeting(BaseModel):
     actions_raised: list[str] = Field(default_factory=list)
     next_meeting_date: datetime | None = None
     agenda_target: str | None = None
+    actionable: bool = False
     agenda_written: bool = False
 
 
@@ -344,7 +354,7 @@ class PersonalItem(BaseModel):
 - [ ] **Step 4: Run tests to verify they pass**
 
 Run: `pytest tests/test_entities_models.py -v`
-Expected: PASS (9 tests)
+Expected: PASS (10 tests)
 
 - [ ] **Step 5: Run the full existing test suite to confirm nothing else broke**
 
@@ -553,7 +563,7 @@ git commit -m "feat: add repositories and indexes for the canonical entity colle
 
 **Interfaces:**
 - Consumes: `Email`/`EmailAddress` (`app.email.models`)
-- Produces: `extract_email_addresses_from_text(text: str) -> list[str]`, `domains_from_emails(emails: list[str]) -> list[str]`, `envelope_people(email: Email) -> list[EmailAddress]` in `app.entities.extraction`; `resolve_date_phrase(phrase: str | None, reference_now: datetime) -> tuple[datetime | None, str | None]` in `app.entities.dates`. Task 7's resolution functions and Task 8's pipeline stage call these directly.
+- Produces: `extract_email_addresses_from_text(text: str) -> list[str]`, `domains_from_emails(emails: list[str]) -> list[str]`, `envelope_people(email: Email) -> list[EmailAddress]` in `app.entities.extraction`; `resolve_date_phrase(phrase: str | None, reference_now: datetime) -> tuple[datetime | None, str | None]` and `find_date_phrase(text: str) -> str | None` in `app.entities.dates`. Task 7's resolution functions and Task 8's pipeline stage call `resolve_date_phrase` directly; Task 5's `MockLLMProvider` calls `find_date_phrase` directly (reusing the same pattern set, per spec §5.1.1, rather than maintaining a second set of date regexes).
 
 - [ ] **Step 1: Write the failing tests**
 
@@ -643,6 +653,58 @@ def test_resolve_date_phrase_falls_back_to_window_for_unrecognized_phrase():
     resolved, date_type = resolve_date_phrase("whenever works", _NOW)
     assert resolved is None
     assert date_type == "window"
+
+
+def test_resolve_date_phrase_handles_relative_duration_in_weeks_as_inferred():
+    # Spec worked example: email dated 2026-09-17, "in 2 weeks" -> 2026-10-01
+    reference = datetime(2026, 9, 17, 9, 0, tzinfo=timezone.utc)
+    resolved, date_type = resolve_date_phrase("We will meet in 2 weeks.", reference)
+    assert date_type == "inferred"
+    assert resolved.date().isoformat() == "2026-10-01"
+
+
+def test_resolve_date_phrase_handles_relative_duration_in_days_with_digit():
+    resolved, date_type = resolve_date_phrase("The meeting is in 10 days.", _NOW)
+    assert date_type == "inferred"
+    assert resolved == _NOW + timedelta(days=10)
+
+
+def test_resolve_date_phrase_handles_relative_duration_with_spelled_out_number():
+    resolved, date_type = resolve_date_phrase("Let's catch up in two weeks.", _NOW)
+    assert date_type == "inferred"
+    assert resolved == _NOW + timedelta(days=14)
+
+
+def test_resolve_date_phrase_recognizes_next_month_explicitly_as_window():
+    resolved, date_type = resolve_date_phrase("We should meet sometime next month.", _NOW)
+    assert resolved is None
+    assert date_type == "window"
+```
+
+Add this import at the top of `tests/test_entities_dates.py`, alongside the existing
+`from datetime import datetime, timezone` line:
+
+```python
+from datetime import timedelta
+```
+
+```python
+# tests/test_entities_dates.py (additional tests, same file)
+from app.entities.dates import find_date_phrase
+
+
+def test_find_date_phrase_returns_first_recognized_expression():
+    # The weekday pattern matches only the weekday word itself, not a preceding "next" --
+    # resolve_date_phrase always computes the *next* occurrence of that weekday regardless,
+    # so the "next" prefix carries no additional information it needs.
+    assert find_date_phrase("We will meet in 2 weeks.") == "in 2 weeks"
+    assert find_date_phrase("Let's meet next Friday.") == "Friday"
+    assert find_date_phrase("We can meet tomorrow.") == "tomorrow"
+    assert find_date_phrase("The meeting is in 10 days.") == "in 10 days"
+
+
+def test_find_date_phrase_returns_none_when_nothing_recognized():
+    assert find_date_phrase("Just checking in, no dates mentioned.") is None
 ```
 
 - [ ] **Step 2: Run tests to verify they fail**
@@ -700,12 +762,43 @@ _EXPLICIT_DATE_PATTERN = re.compile(
     r"aug(?:ust)?|sep(?:tember)?|oct(?:ober)?|nov(?:ember)?|dec(?:ember)?)\s+(\d{1,2})(?:st|nd|rd|th)?\b",
     re.IGNORECASE,
 )
+_NUMBER_WORDS = {
+    "a": 1, "an": 1, "one": 1, "two": 2, "three": 3, "four": 4, "five": 5,
+    "six": 6, "seven": 7, "eight": 8, "nine": 9, "ten": 10,
+}
+_RELATIVE_DURATION_PATTERN = re.compile(
+    r"\bin\s+(\d+|a|an|one|two|three|four|five|six|seven|eight|nine|ten)\s+(day|days|week|weeks)\b",
+    re.IGNORECASE,
+)
+_VAGUE_WINDOW_PATTERN = re.compile(
+    r"\bnext month\b|\bsometime\b|\bend of (?:the )?month\b", re.IGNORECASE
+)
+_DATE_PHRASE_PATTERNS = [
+    _EXPLICIT_DATE_PATTERN,
+    _TOMORROW_PATTERN,
+    _WEEKDAY_PATTERN,
+    _RELATIVE_DURATION_PATTERN,
+    _VAGUE_WINDOW_PATTERN,
+]
 
 
 def _next_weekday(reference: datetime, weekday: int) -> datetime:
     days_ahead = (weekday - reference.weekday()) % 7
     days_ahead = days_ahead or 7
     return reference + timedelta(days=days_ahead)
+
+
+def find_date_phrase(text: str) -> str | None:
+    """Return the first recognized date-related substring in text, verbatim, or None.
+
+    Used by MockLLMProvider so the phrase a mention carries and the phrase
+    resolve_date_phrase later resolves come from the same pattern set (spec S5.1.1).
+    """
+    for pattern in _DATE_PHRASE_PATTERNS:
+        match = pattern.search(text)
+        if match:
+            return match.group(0)
+    return None
 
 
 def resolve_date_phrase(
@@ -732,13 +825,28 @@ def resolve_date_phrase(
         weekday = _WEEKDAYS[weekday_match.group(1).lower()]
         return _next_weekday(reference_now, weekday), "inferred"
 
+    duration_match = _RELATIVE_DURATION_PATTERN.search(phrase)
+    if duration_match:
+        amount_word = duration_match.group(1).lower()
+        amount = int(amount_word) if amount_word.isdigit() else _NUMBER_WORDS[amount_word]
+        unit = duration_match.group(2).lower()
+        days = amount * 7 if unit.startswith("week") else amount
+        return reference_now + timedelta(days=days), "inferred"
+
     return None, "window"
 ```
+
+Note: `_VAGUE_WINDOW_PATTERN` is checked by `find_date_phrase` (so "next month"/"sometime" is
+recognized as *a* date phrase worth extracting) but `resolve_date_phrase` still returns
+`(None, "window")` for it via the same final fallback every other unrecognized phrase
+already hits — it does not need its own branch inside `resolve_date_phrase` because the
+outcome is identical either way; it only needs to be in `_DATE_PHRASE_PATTERNS` so
+`find_date_phrase` doesn't skip past it in favor of nothing.
 
 - [ ] **Step 5: Run tests to verify they pass**
 
 Run: `pytest tests/test_entities_extraction.py tests/test_entities_dates.py -v`
-Expected: PASS (11 tests)
+Expected: PASS (16 tests: 4 extraction + 12 dates)
 
 - [ ] **Step 6: Run the full existing test suite to confirm nothing else broke**
 
@@ -763,7 +871,7 @@ git commit -m "feat: add deterministic email/domain extraction and date-phrase r
 - Test: `tests/test_mock_llm_provider.py` (extend)
 
 **Interfaces:**
-- Consumes: nothing new
+- Consumes: `find_date_phrase` from Task 4's `app.entities.dates`
 - Produces: `MentionedPerson`, `MentionedProject`, `RawCommitment`, `RawMeeting`, `RawPersonalItem` (new, in `app.analysis.schemas`); `EmailAnalysis` gains `people_mentioned`, `projects_mentioned`, `commitments_mentioned`, `meetings_mentioned`, `personal_items_mentioned`, `goal_pillar`, `label_applied`, `confidence`. Task 7's resolution functions and Task 8's pipeline stage read these fields off the `EmailAnalysis` object `analyze_email_with_validation` already returns.
 
 - [ ] **Step 1: Write the failing tests**
@@ -819,7 +927,7 @@ def test_mock_llm_detects_a_mine_commitment_with_weekday_date_phrase():
     assert len(result["commitments_mentioned"]) == 1
     commitment = result["commitments_mentioned"][0]
     assert commitment["class"] == "mine"
-    assert commitment["date_phrase"] == "friday"
+    assert commitment["date_phrase"] == "Friday"
 
 
 def test_mock_llm_detects_meeting_language_as_meeting_mentioned():
@@ -827,7 +935,7 @@ def test_mock_llm_detects_meeting_language_as_meeting_mentioned():
     email = _email("Let's meet on Tuesday to go over pricing.")
     result = provider.analyze_email(email)
     assert len(result["meetings_mentioned"]) == 1
-    assert result["meetings_mentioned"][0]["date_phrase"] == "tuesday"
+    assert result["meetings_mentioned"][0]["date_phrase"] == "Tuesday"
 
 
 def test_mock_llm_classification_fields_are_deterministic():
@@ -839,6 +947,64 @@ def test_mock_llm_classification_fields_are_deterministic():
     assert with_signal["label_applied"] == "Needs reply: ASAP"
     assert without_signal["label_applied"] == "Read only"
     assert with_signal["confidence"] == 0.8
+
+
+# --- Relative-date meeting/action detection (spec S5.1.1) ---
+
+
+def test_mock_llm_detects_relative_duration_meeting_with_no_commitment():
+    provider = MockLLMProvider()
+    result = provider.analyze_email(_email("Sounds good. We will meet in 2 weeks."))
+
+    assert len(result["meetings_mentioned"]) == 1
+    assert result["meetings_mentioned"][0]["date_phrase"] == "in 2 weeks"
+    assert result["meetings_mentioned"][0]["is_past"] is False
+    # "we will meet" must NOT also be read as a "mine" commitment.
+    assert result["commitments_mentioned"] == []
+
+
+def test_mock_llm_detects_meet_next_weekday():
+    provider = MockLLMProvider()
+    result = provider.analyze_email(_email("Let's meet next Friday."))
+    assert result["meetings_mentioned"][0]["date_phrase"] == "Friday"
+
+
+def test_mock_llm_detects_meet_tomorrow():
+    provider = MockLLMProvider()
+    result = provider.analyze_email(_email("We can meet tomorrow."))
+    assert result["meetings_mentioned"][0]["date_phrase"] == "tomorrow"
+
+
+def test_mock_llm_detects_meeting_noun_form_with_digit_duration():
+    provider = MockLLMProvider()
+    result = provider.analyze_email(_email("The meeting is in 10 days."))
+    assert len(result["meetings_mentioned"]) == 1
+    assert result["meetings_mentioned"][0]["date_phrase"] == "in 10 days"
+
+
+def test_mock_llm_detects_catch_up_phrase_as_meeting():
+    provider = MockLLMProvider()
+    result = provider.analyze_email(_email("Let's catch up in 10 days."))
+    assert len(result["meetings_mentioned"]) == 1
+
+
+def test_mock_llm_detects_both_a_commitment_and_a_relative_date_meeting():
+    provider = MockLLMProvider()
+    result = provider.analyze_email(
+        _email("I will send the proposal. We can meet in 2 weeks to go over it.")
+    )
+    assert len(result["commitments_mentioned"]) == 1
+    assert result["commitments_mentioned"][0]["class"] == "mine"
+    assert len(result["meetings_mentioned"]) == 1
+    assert result["meetings_mentioned"][0]["date_phrase"] == "in 2 weeks"
+
+
+def test_mock_llm_does_not_detect_historical_meeting_mention_as_a_meeting():
+    provider = MockLLMProvider()
+    result = provider.analyze_email(_email("We met last week and it went well."))
+    # "met" (past tense) is a different word from the "meet" trigger -- this is
+    # intentionally never recognized as a meeting mention at all by the keyword-based mock.
+    assert result["meetings_mentioned"] == []
 ```
 
 - [ ] **Step 2: Run tests to verify they fail**
@@ -938,23 +1104,24 @@ readability; do not remove or rename any existing field.)
 Add near the top of the file, alongside the existing pattern constants:
 
 ```python
-_WEEKDAY_WORDS = re.compile(
-    r"\b(monday|tuesday|wednesday|thursday|friday|saturday|sunday|tomorrow)\b", re.IGNORECASE
-)
-_MINE_COMMITMENT_PATTERN = re.compile(r"\bi will\b|\bi'll\b|\bwe will\b", re.IGNORECASE)
+from app.entities.dates import find_date_phrase
+
+# Negative lookahead excludes "...will meet" -- that phrasing is a meeting signal, not a
+# commitment (spec S5.1.1's explicit "We will meet in 2 weeks" example: meeting detected,
+# no commitment). "I will send"/"I'll follow up"/"we will confirm" etc. still match.
+_MINE_COMMITMENT_PATTERN = re.compile(r"\b(?:i will|i'll|we will)\b(?!\s+meet\b)", re.IGNORECASE)
 _OWED_TO_ME_COMMITMENT_PATTERN = re.compile(r"\bcould you\b|\bcan you\b", re.IGNORECASE)
-_MEETING_LANGUAGE = re.compile(r"\b(meet|call|sync)\b", re.IGNORECASE)
-
-
-def _first_date_phrase(body: str) -> str | None:
-    match = _WEEKDAY_WORDS.search(body)
-    return match.group(1).lower() if match else None
+# Broadened per spec S5.1.1: a meeting doesn't require an explicit invitation -- the noun
+# forms "meeting"/"meetings" and the phrase "catch up" must also trigger detection. Note
+# "met" (past tense) intentionally does NOT match "meet" -- see
+# test_mock_llm_does_not_detect_historical_meeting_mention_as_a_meeting.
+_MEETING_LANGUAGE = re.compile(r"\b(meet|meeting|meetings|call|sync|catch up)\b", re.IGNORECASE)
 ```
 
 Inside `MockLLMProvider.analyze_email`, before the final `return` statement, add:
 
 ```python
-        date_phrase = _first_date_phrase(body)
+        date_phrase = find_date_phrase(body)
 
         people_mentioned = [
             {
@@ -1019,7 +1186,7 @@ Then extend the `return` dict (which already exists) with:
 - [ ] **Step 5: Run tests to verify they pass**
 
 Run: `pytest tests/test_analysis_schemas.py tests/test_mock_llm_provider.py -v`
-Expected: PASS (all existing tests in both files plus the new ones)
+Expected: PASS (21 tests: 4 in test_analysis_schemas.py, 17 in test_mock_llm_provider.py)
 
 - [ ] **Step 6: Run the full existing test suite to confirm nothing else broke**
 
@@ -1263,11 +1430,23 @@ def test_resolve_commitment_creates_new_for_different_date(db):
 
 def test_resolve_meeting_deduplicates_on_thread_and_date(db):
     date = datetime(2026, 9, 20, tzinfo=timezone.utc)
-    first = resolve_meeting(db, thread_id="thread_1", date=date, raw={"attendees": [], "actions_raised": []})
-    second = resolve_meeting(db, thread_id="thread_1", date=date, raw={"attendees": [], "actions_raised": []})
+    first = resolve_meeting(
+        db, thread_id="thread_1", date=date, raw={"attendees": [], "actions_raised": []}, actionable=True
+    )
+    second = resolve_meeting(
+        db, thread_id="thread_1", date=date, raw={"attendees": [], "actions_raised": []}, actionable=True
+    )
 
     assert first == second
     assert len(MeetingRepository(db).all_for_thread("thread_1")) == 1
+
+
+def test_resolve_meeting_stores_actionable_flag(db):
+    meeting_id = resolve_meeting(
+        db, thread_id="thread_2", date=None, raw={"attendees": [], "actions_raised": []}, actionable=False
+    )
+    stored = MeetingRepository(db).find_one({"id": meeting_id})
+    assert stored["actionable"] is False
 
 
 def test_resolve_personal_item_deduplicates_on_sender_and_description(db):
@@ -1430,7 +1609,9 @@ def resolve_commitment(
     return commitment_id
 
 
-def resolve_meeting(db: Database, thread_id: str, date: datetime | None, raw: dict[str, Any]) -> str:
+def resolve_meeting(
+    db: Database, thread_id: str, date: datetime | None, raw: dict[str, Any], actionable: bool
+) -> str:
     repo = MeetingRepository(db)
     date_iso = date.isoformat() if date else None
 
@@ -1444,6 +1625,7 @@ def resolve_meeting(db: Database, thread_id: str, date: datetime | None, raw: di
         date=date,
         attendees=raw.get("attendees", []),
         actions_raised=raw.get("actions_raised", []),
+        actionable=actionable,
     )
     doc = meeting.model_dump(mode="json")
     doc["thread_id"] = thread_id
@@ -1507,7 +1689,7 @@ Similarly `resolve_personal_item` stores `sender_email` for its own dedup lookup
 - [ ] **Step 4: Run tests to verify they pass**
 
 Run: `pytest tests/test_entities_resolution.py -v`
-Expected: PASS (12 tests)
+Expected: PASS (13 tests)
 
 - [ ] **Step 5: Run the full existing test suite to confirm nothing else broke**
 
@@ -1633,6 +1815,37 @@ def test_pipeline_reuses_same_person_across_two_emails_in_same_thread(db, settin
     run_pipeline(db, MockEmailProvider(payloads=payloads), MockLLMProvider(), MockCalendarProvider(), settings)
 
     assert PersonRepository(db).find_many({}).__len__() == 1
+
+
+def test_pipeline_detects_relative_date_meeting_with_no_commitment_and_no_follow_up(db, settings):
+    from app.database.repositories import FollowUpRepository, MeetingRepository
+
+    payloads = [_raw_email("1a08090646ebaa45", "Sounds good. We will meet in 2 weeks.")]
+    run_pipeline(db, MockEmailProvider(payloads=payloads), MockLLMProvider(), MockCalendarProvider(), settings)
+
+    stored = db.emails.find_one({"message_id": "1a08090646ebaa45"}, {"_id": 0})
+    entities_referenced = stored["entities_referenced"]
+    assert entities_referenced["commitments"] == []
+    assert len(entities_referenced["meetings"]) == 1
+
+    meeting = MeetingRepository(db).find_one({"id": entities_referenced["meetings"][0]})
+    assert meeting["actionable"] is True
+    # 2026-09-13 (this email's timestamp) + 14 days = 2026-09-27
+    assert meeting["date"].startswith("2026-09-27")
+
+    # The core corrected rule: a Meeting must never trigger a FollowUp by itself.
+    assert entities_referenced["follow_ups"] == []
+    assert FollowUpRepository(db).find_many({}) == []
+
+
+def test_pipeline_does_not_mark_historical_meeting_mention_as_actionable(db, settings):
+    payloads = [_raw_email("1a08090646ebaa45", "We met last week and it went well.")]
+    run_pipeline(db, MockEmailProvider(payloads=payloads), MockLLMProvider(), MockCalendarProvider(), settings)
+
+    stored = db.emails.find_one({"message_id": "1a08090646ebaa45"}, {"_id": 0})
+    # MockLLMProvider never recognizes "met" (past tense) as a meeting mention at all --
+    # see test_mock_llm_does_not_detect_historical_meeting_mention_as_a_meeting (Task 5).
+    assert stored["entities_referenced"]["meetings"] == []
 
 
 def test_pipeline_marks_failed_at_entities_processed_without_losing_prior_stage_data(
@@ -1762,8 +1975,11 @@ def _process_entities(
     thread_id: str,
     email: Email,
     analysis: EmailAnalysis,
-    now: datetime,
+    reference_now: datetime,
 ) -> dict[str, list[str]]:
+    # reference_now is the email's OWN timestamp, not wall-clock "now" -- this matches the
+    # existing detect_meeting's established pattern (app/calendar/detector.py, called with
+    # email.timestamp) so a re-run days later resolves the same relative phrase the same way.
     entities_referenced: dict[str, list[str]] = {
         "people": [], "projects": [], "commitments": [],
         "follow_ups": [], "meetings": [], "personal": [],
@@ -1783,7 +1999,7 @@ def _process_entities(
             db,
             {"name": mention.name, "email": mention.email, "org": mention.org},
             is_sender=is_sender,
-            now=now,
+            now=reference_now,
         )
         entities_referenced["people"].append(person_id)
 
@@ -1795,14 +2011,17 @@ def _process_entities(
         entities_referenced["projects"].append(project_id)
         project_id_by_name[mention.name] = project_id
 
+    # FollowUps are derived ONLY from a resolved Commitment (spec S5.1.1 correction) --
+    # a Meeting or PersonalItem NEVER triggers a FollowUp by itself, no matter how
+    # "actionable" the meeting is. Do not add a fallback branch here.
     for raw_commitment in analysis.commitments_mentioned:
-        resolved_date, date_type = resolve_date_phrase(raw_commitment.date_phrase, now)
+        resolved_date, date_type = resolve_date_phrase(raw_commitment.date_phrase, reference_now)
         commitment_id = resolve_commitment(
             db,
             thread_id=thread_id,
             raw=raw_commitment.model_dump(mode="json", by_alias=True),
             message_id=email.message_id,
-            made_on=now,
+            made_on=reference_now,
             resolved_date=resolved_date,
             date_type=date_type,
             goal_pillar=analysis.goal_pillar,
@@ -1812,21 +2031,24 @@ def _process_entities(
         follow_up_id = derive_follow_up(db, commitment_id=commitment_id, thread_id=None)
         entities_referenced["follow_ups"].append(follow_up_id)
 
-    if not analysis.commitments_mentioned and (
-        analysis.meetings_mentioned or analysis.personal_items_mentioned
-    ):
-        follow_up_id = derive_follow_up(db, commitment_id=None, thread_id=thread_id)
-        entities_referenced["follow_ups"].append(follow_up_id)
-
     for raw_meeting in analysis.meetings_mentioned:
-        resolved_date, _ = resolve_date_phrase(raw_meeting.date_phrase, now)
+        resolved_date, _ = resolve_date_phrase(raw_meeting.date_phrase, reference_now)
+        # The actionable signal (spec S4.6): true for any future-oriented meeting mention,
+        # even a vague one with no precise resolved_date -- false only when the LLM (or,
+        # for MockLLMProvider, the simple absence of a "meet" match on past-tense "met")
+        # flagged it as historical.
+        actionable = not raw_meeting.is_past
         meeting_id = resolve_meeting(
-            db, thread_id=thread_id, date=resolved_date, raw=raw_meeting.model_dump(mode="json")
+            db,
+            thread_id=thread_id,
+            date=resolved_date,
+            raw=raw_meeting.model_dump(mode="json"),
+            actionable=actionable,
         )
         entities_referenced["meetings"].append(meeting_id)
 
     for raw_item in analysis.personal_items_mentioned:
-        resolved_date, _ = resolve_date_phrase(raw_item.date_phrase, now)
+        resolved_date, _ = resolve_date_phrase(raw_item.date_phrase, reference_now)
         item_id = resolve_personal_item(
             db, sender_email=sender_email, raw=raw_item.model_dump(mode="json"), resolved_date=resolved_date
         )
@@ -1841,8 +2063,10 @@ and before the existing `current_stage = ProcessingStage.REPLY_PROCESSED` line),
 
 ```python
             current_stage = ProcessingStage.ENTITIES_PROCESSED
-            now_utc = datetime.now(timezone.utc)
-            entities_referenced = _process_entities(db, thread_id, email, analysis, now_utc)
+            # email.timestamp, not datetime.now() -- matches detect_meeting's existing
+            # reference-date pattern, so relative phrases resolve consistently regardless
+            # of when the pipeline actually runs.
+            entities_referenced = _process_entities(db, thread_id, email, analysis, email.timestamp)
             source_link = (
                 f"https://mail.google.com/mail/u/0/#all/{email.message_id}"
                 if _GMAIL_INTERNAL_ID_PATTERN.match(email.message_id)
@@ -1869,7 +2093,7 @@ handling is required.)
 - [ ] **Step 6: Run tests to verify they pass**
 
 Run: `pytest tests/test_pipeline_entities.py -v`
-Expected: PASS (4 tests)
+Expected: PASS (6 tests)
 
 - [ ] **Step 7: Run the full existing test suite to confirm nothing else broke**
 
