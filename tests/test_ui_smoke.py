@@ -22,7 +22,11 @@ def test_dashboard_app_runs_without_exceptions(monkeypatch):
     monkeypatch.setenv("EMAIL_PROVIDER", "demo")
     monkeypatch.setenv("CALENDAR_PROVIDER", "mock")
     monkeypatch.setenv("LLM_PROVIDER", "mock")
-    monkeypatch.setenv("MONGODB_DATABASE", "cos_sales_test")
+    # SALES_AGENT_MONGODB_DATABASE, not MONGODB_DATABASE: Settings prefers the former
+    # (app/config/settings.py) so this project isn't hijacked by an unrelated system's
+    # same-named MONGODB_DATABASE env var elsewhere on the machine -- monkeypatching the
+    # generic name alone would no longer take effect here.
+    monkeypatch.setenv("SALES_AGENT_MONGODB_DATABASE", "cos_sales_test")
 
     # Patch get_client on its defining module rather than importing
     # app.ui.dashboard directly: the dashboard module calls main() at import
