@@ -109,3 +109,33 @@ class CounterRepository(_BaseRepository):
             return_document=ReturnDocument.AFTER,
         )
         return doc["seq"]
+
+
+class PersonRepository(_BaseRepository):
+    collection_name = "people"
+
+
+class ProjectRepository(_BaseRepository):
+    collection_name = "projects"
+
+
+class CommitmentRepository(_BaseRepository):
+    collection_name = "commitments"
+
+    def all_for_thread(self, thread_id: str) -> list[dict]:
+        return self.find_many({"thread_id": thread_id})
+
+
+class FollowUpRepository(_BaseRepository):
+    collection_name = "follow_ups"
+
+
+class MeetingRepository(_BaseRepository):
+    collection_name = "meetings"
+
+    def all_for_thread(self, thread_id: str) -> list[dict]:
+        return self.find_many({"thread_id": thread_id})
+
+
+class PersonalItemRepository(_BaseRepository):
+    collection_name = "personal_items"

@@ -24,3 +24,20 @@ def initialize_indexes(db: Database) -> None:
     )
 
     db.processing_runs.create_index("started_at")
+
+    db.people.create_index("id", unique=True)
+    db.people.create_index("email", unique=True, sparse=True)
+
+    db.projects.create_index("id", unique=True)
+
+    db.commitments.create_index("id", unique=True)
+    db.commitments.create_index("thread_id")
+
+    db.follow_ups.create_index("id", unique=True)
+    db.follow_ups.create_index("commitment_id", sparse=True)
+    db.follow_ups.create_index("thread_id", sparse=True)
+
+    db.meetings.create_index("id", unique=True)
+    db.meetings.create_index("thread_id")
+
+    db.personal_items.create_index("id", unique=True)
