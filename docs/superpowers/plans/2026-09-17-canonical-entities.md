@@ -1365,6 +1365,12 @@ def test_resolve_person_never_merges_on_name_alone_and_flags_for_review(db):
     people = PersonRepository(db).find_many({})
     assert len(people) == 2
     assert all(p["review_flag"] is True for p in people)
+    # The "email" key must be OMITTED (not stored as null) for a no-email Person -- a
+    # sparse unique index on real MongoDB only excludes a document where the field is
+    # entirely missing, not one where it is present with value null. Storing "email": null
+    # for two such People would collide on people.email's sparse-unique index (Task 3) on
+    # real MongoDB, even though mongomock's more lenient interpretation would not catch it.
+    assert all("email" not in p for p in people)
 
 
 def test_resolve_person_touches_last_inbound_when_sender(db):
@@ -1542,7 +1548,13 @@ def resolve_person(
         org=mention.get("org"),
         review_flag=True,
     )
-    repo.upsert_by_key({"id": person_id}, person.model_dump(mode="json"))
+    # exclude={"email"}: MongoDB's sparse unique index on people.email (Task 3) only
+    # excludes a document where the field is entirely MISSING -- a document with
+    # email explicitly set to null still gets indexed with key null, and a second such
+    # document would collide on the unique constraint. Omitting the key entirely (rather
+    # than storing "email": null) is what actually makes two no-email People coexist on
+    # real MongoDB, not just under mongomock's more lenient interpretation of sparse+null.
+    repo.upsert_by_key({"id": person_id}, person.model_dump(mode="json", exclude={"email"}))
     return person_id
 
 
