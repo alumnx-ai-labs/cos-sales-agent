@@ -4,6 +4,7 @@ from typing import Any
 from rapidfuzz import fuzz
 
 from app.email.models import Email
+from app.entities.dates import find_date_phrase
 from app.interfaces.llm_provider import LLMProvider
 
 _COMPETITORS = ["Salesforce", "HubSpot", "Microsoft", "Zoho"]
@@ -25,6 +26,17 @@ _SEAT_PATTERN = re.compile(r"\b(\d+)\s*(seats?|users?|licen[sc]es?)\b", re.IGNOR
 # concerns" vs "concerns about data migration" (88.46).
 _SAME_FACT_SIMILARITY_THRESHOLD = 80
 
+# Negative lookahead excludes "...will meet" -- that phrasing is a meeting signal, not a
+# commitment (spec S5.1.1's explicit "We will meet in 2 weeks" example: meeting detected,
+# no commitment). "I will send"/"I'll follow up"/"we will confirm" etc. still match.
+_MINE_COMMITMENT_PATTERN = re.compile(r"\b(?:i will|i'll|we will)\b(?!\s+meet\b)", re.IGNORECASE)
+_OWED_TO_ME_COMMITMENT_PATTERN = re.compile(r"\bcould you\b|\bcan you\b", re.IGNORECASE)
+# Broadened per spec S5.1.1: a meeting doesn't require an explicit invitation -- the noun
+# forms "meeting"/"meetings" and the phrase "catch up" must also trigger detection. Note
+# "met" (past tense) intentionally does NOT match "meet" -- see
+# test_mock_llm_does_not_detect_historical_meeting_mention_as_a_meeting.
+_MEETING_LANGUAGE = re.compile(r"\b(meet|meeting|meetings|call|sync|catch up)\b", re.IGNORECASE)
+
 
 class MockLLMProvider(LLMProvider):
     def analyze_email(self, email: Email) -> dict[str, Any]:
@@ -45,6 +57,54 @@ class MockLLMProvider(LLMProvider):
         if "meet" in body.lower() or "call" in body.lower():
             intent = "meeting_request"
 
+        date_phrase = find_date_phrase(body)
+
+        people_mentioned = [
+            {
+                "name": email.from_.name or email.from_.email,
+                "email": email.from_.email,
+                "org": None,
+                "role_hint": None,
+            }
+        ]
+
+        commitments_mentioned = []
+        if _MINE_COMMITMENT_PATTERN.search(body):
+            commitments_mentioned.append(
+                {
+                    "what": "follow up",
+                    "class": "mine",
+                    "owed_by": None,
+                    "owed_to": None,
+                    "date_phrase": date_phrase,
+                    "importance_hint": None,
+                }
+            )
+        if _OWED_TO_ME_COMMITMENT_PATTERN.search(body):
+            commitments_mentioned.append(
+                {
+                    "what": "requested action",
+                    "class": "owed_to_me",
+                    "owed_by": None,
+                    "owed_to": None,
+                    "date_phrase": date_phrase,
+                    "importance_hint": None,
+                }
+            )
+
+        meetings_mentioned = []
+        if _MEETING_LANGUAGE.search(body):
+            meetings_mentioned.append(
+                {
+                    "date_phrase": date_phrase,
+                    "attendees": [],
+                    "is_past": False,
+                    "actions_raised": [],
+                }
+            )
+
+        label_applied = "Needs reply: ASAP" if buying_signals else "Read only"
+
         return {
             "email_id": email.message_id,
             "summary": body[:200],
@@ -63,6 +123,14 @@ class MockLLMProvider(LLMProvider):
             "people": [],
             "companies": [],
             "products": [],
+            "people_mentioned": people_mentioned,
+            "projects_mentioned": [],
+            "commitments_mentioned": commitments_mentioned,
+            "meetings_mentioned": meetings_mentioned,
+            "personal_items_mentioned": [],
+            "goal_pillar": "Sales",
+            "label_applied": label_applied,
+            "confidence": 0.8,
         }
 
     def update_context(self, previous_context: dict[str, Any], new_analysis: dict[str, Any]) -> dict[str, Any]:

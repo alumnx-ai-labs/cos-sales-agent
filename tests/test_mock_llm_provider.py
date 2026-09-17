@@ -108,3 +108,99 @@ def test_draft_reply_produces_subject_and_body():
     draft = provider.draft_reply(context, email)
     assert draft["subject"].startswith("Re:")
     assert "ABC Corp" in draft["body"] or "pricing" in draft["body"].lower()
+
+
+def test_mock_llm_includes_sender_as_mentioned_person():
+    provider = MockLLMProvider()
+    email = _email("Just checking in.")
+    result = provider.analyze_email(email)
+    assert result["people_mentioned"] == [
+        {"name": "John", "email": "john@example.com", "org": None, "role_hint": None}
+    ]
+
+
+def test_mock_llm_detects_a_mine_commitment_with_weekday_date_phrase():
+    provider = MockLLMProvider()
+    email = _email("I will send the proposal on Friday.")
+    result = provider.analyze_email(email)
+    assert len(result["commitments_mentioned"]) == 1
+    commitment = result["commitments_mentioned"][0]
+    assert commitment["class"] == "mine"
+    assert commitment["date_phrase"] == "Friday"
+
+
+def test_mock_llm_detects_meeting_language_as_meeting_mentioned():
+    provider = MockLLMProvider()
+    email = _email("Let's meet on Tuesday to go over pricing.")
+    result = provider.analyze_email(email)
+    assert len(result["meetings_mentioned"]) == 1
+    assert result["meetings_mentioned"][0]["date_phrase"] == "Tuesday"
+
+
+def test_mock_llm_classification_fields_are_deterministic():
+    provider = MockLLMProvider()
+    with_signal = provider.analyze_email(_email("Can you send pricing for the enterprise plan?"))
+    without_signal = provider.analyze_email(_email("Just an FYI, no action needed."))
+
+    assert with_signal["goal_pillar"] == "Sales"
+    assert with_signal["label_applied"] == "Needs reply: ASAP"
+    assert without_signal["label_applied"] == "Read only"
+    assert with_signal["confidence"] == 0.8
+
+
+# --- Relative-date meeting/action detection (spec S5.1.1) ---
+
+
+def test_mock_llm_detects_relative_duration_meeting_with_no_commitment():
+    provider = MockLLMProvider()
+    result = provider.analyze_email(_email("Sounds good. We will meet in 2 weeks."))
+
+    assert len(result["meetings_mentioned"]) == 1
+    assert result["meetings_mentioned"][0]["date_phrase"] == "in 2 weeks"
+    assert result["meetings_mentioned"][0]["is_past"] is False
+    # "we will meet" must NOT also be read as a "mine" commitment.
+    assert result["commitments_mentioned"] == []
+
+
+def test_mock_llm_detects_meet_next_weekday():
+    provider = MockLLMProvider()
+    result = provider.analyze_email(_email("Let's meet next Friday."))
+    assert result["meetings_mentioned"][0]["date_phrase"] == "Friday"
+
+
+def test_mock_llm_detects_meet_tomorrow():
+    provider = MockLLMProvider()
+    result = provider.analyze_email(_email("We can meet tomorrow."))
+    assert result["meetings_mentioned"][0]["date_phrase"] == "tomorrow"
+
+
+def test_mock_llm_detects_meeting_noun_form_with_digit_duration():
+    provider = MockLLMProvider()
+    result = provider.analyze_email(_email("The meeting is in 10 days."))
+    assert len(result["meetings_mentioned"]) == 1
+    assert result["meetings_mentioned"][0]["date_phrase"] == "in 10 days"
+
+
+def test_mock_llm_detects_catch_up_phrase_as_meeting():
+    provider = MockLLMProvider()
+    result = provider.analyze_email(_email("Let's catch up in 10 days."))
+    assert len(result["meetings_mentioned"]) == 1
+
+
+def test_mock_llm_detects_both_a_commitment_and_a_relative_date_meeting():
+    provider = MockLLMProvider()
+    result = provider.analyze_email(
+        _email("I will send the proposal. We can meet in 2 weeks to go over it.")
+    )
+    assert len(result["commitments_mentioned"]) == 1
+    assert result["commitments_mentioned"][0]["class"] == "mine"
+    assert len(result["meetings_mentioned"]) == 1
+    assert result["meetings_mentioned"][0]["date_phrase"] == "in 2 weeks"
+
+
+def test_mock_llm_does_not_detect_historical_meeting_mention_as_a_meeting():
+    provider = MockLLMProvider()
+    result = provider.analyze_email(_email("We met last week and it went well."))
+    # "met" (past tense) is a different word from the "meet" trigger -- this is
+    # intentionally never recognized as a meeting mention at all by the keyword-based mock.
+    assert result["meetings_mentioned"] == []
