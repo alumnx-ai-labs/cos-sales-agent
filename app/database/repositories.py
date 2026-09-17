@@ -1,6 +1,7 @@
 from datetime import datetime, timezone
 from typing import Any
 
+from pymongo import ReturnDocument
 from pymongo.collection import Collection
 from pymongo.database import Database
 
@@ -95,3 +96,16 @@ class OpportunityRepository(_BaseRepository):
 
 class ActivityRepository(_BaseRepository):
     collection_name = "activities"
+
+
+class CounterRepository(_BaseRepository):
+    collection_name = "counters"
+
+    def increment_and_get(self, prefix: str) -> int:
+        doc = self._collection.find_one_and_update(
+            {"_id": prefix},
+            {"$inc": {"seq": 1}},
+            upsert=True,
+            return_document=ReturnDocument.AFTER,
+        )
+        return doc["seq"]
