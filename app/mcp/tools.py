@@ -6,8 +6,10 @@ from app.config.settings import Settings
 from app.database.repositories import (
     CalendarActionRepository,
     ContextSnapshotRepository,
+    EmailRepository,
     KnowledgeRepository,
     ReplyDraftRepository,
+    ThreadRepository,
 )
 from app.email.models import Email
 from app.interfaces.calendar_provider import CalendarProvider
@@ -16,6 +18,7 @@ from app.pipeline import run_pipeline
 from app.providers.email.mock import MockEmailProvider
 
 _PENDING_CALENDAR_STATUSES = ("awaiting_approval", "needs_clarification")
+_BODY_PREVIEW_LENGTH = 150
 
 
 def _empty_result(status: str, error: str | None) -> dict[str, Any]:
@@ -90,3 +93,44 @@ def process_email(
             else None
         ),
     }
+
+
+def list_processed_emails(db: Database, limit: int = 50) -> list[dict[str, Any]]:
+    thread_id_by_message_id: dict[str, str] = {}
+    for thread in ThreadRepository(db).find_many({}):
+        for message_id in thread["message_ids"]:
+            thread_id_by_message_id[message_id] = thread["thread_id"]
+
+    emails = sorted(
+        EmailRepository(db).find_many({}), key=lambda e: e["timestamp"], reverse=True
+    )[:limit]
+
+    context_repo = ContextSnapshotRepository(db)
+    summary_by_thread_id: dict[str, str | None] = {}
+
+    results: list[dict[str, Any]] = []
+    for email in emails:
+        thread_id = thread_id_by_message_id.get(email["message_id"])
+        if thread_id is not None and thread_id not in summary_by_thread_id:
+            snapshot = context_repo.latest_for_thread(thread_id)
+            summary_by_thread_id[thread_id] = snapshot["context"]["summary"] if snapshot else None
+
+        results.append(
+            {
+                "message_id": email["message_id"],
+                "thread_id": thread_id,
+                "from": email["from"],
+                "to": email["to"],
+                "cc": email["cc"],
+                "subject": email["subject"],
+                "timestamp": email["timestamp"],
+                "processing_status": {
+                    "stage": email["processing_status"]["stage"],
+                    "error": email["processing_status"]["error"],
+                },
+                "summary": summary_by_thread_id.get(thread_id),
+                "body_preview": email["body"][:_BODY_PREVIEW_LENGTH],
+            }
+        )
+
+    return results

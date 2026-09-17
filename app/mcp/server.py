@@ -54,6 +54,18 @@ def process_email(email: Email) -> dict[str, Any]:
     )
 
 
+@mcp.tool()
+def list_processed_emails(limit: int = 50) -> list[dict[str, Any]]:
+    """List emails already ingested via process_email, most recent first.
+
+    Only shows emails that have already been processed by this tool -- it never reads
+    Gmail directly. Each entry includes message_id, thread_id, from/to/cc, subject,
+    timestamp, processing_status, the thread's current summary, and a body_preview
+    truncated to about 150 characters. The full email body is never returned.
+    """
+    return tools.list_processed_emails(_get_db(), limit)
+
+
 def main() -> None:
     mcp.run()
 

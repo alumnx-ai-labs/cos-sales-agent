@@ -5,7 +5,7 @@ from app.config.settings import Settings
 from app.database.indexes import initialize_indexes
 from app.email.models import parse_email
 from app.interfaces.llm_provider import LLMProvider
-from app.mcp.tools import process_email
+from app.mcp.tools import list_processed_emails, process_email
 from app.providers.calendar.mock import MockCalendarProvider
 from app.providers.llm.mock import MockLLMProvider
 
@@ -124,3 +124,59 @@ def test_process_email_returns_failed_status_when_email_limit_yields_no_result(d
         "reply_draft": None,
         "calendar_proposal": None,
     }
+
+
+def test_list_processed_emails_returns_stored_fields_most_recent_first(db, settings):
+    process_email(
+        db,
+        parse_email(_raw_email("msg_001", "Body one.", timestamp="2026-09-13T10:00:00Z")),
+        MockLLMProvider(),
+        MockCalendarProvider(),
+        settings,
+    )
+    process_email(
+        db,
+        parse_email(
+            _raw_email(
+                "msg_002",
+                "Body two is a fair bit longer than one hundred and fifty characters so that "
+                "the preview truncation actually has something real to cut off in this test.",
+                timestamp="2026-09-14T10:00:00Z",
+            )
+        ),
+        MockLLMProvider(),
+        MockCalendarProvider(),
+        settings,
+    )
+
+    results = list_processed_emails(db, limit=50)
+
+    assert [r["message_id"] for r in results] == ["msg_002", "msg_001"]
+    first = results[0]
+    assert first["thread_id"] is not None
+    assert first["from"] == {"name": "John", "email": "john@example.com"}
+    assert first["to"] == [{"name": "Ashok", "email": "ashok@example.com"}]
+    assert first["cc"] == []
+    assert first["subject"] == "Enterprise CRM Proposal"
+    assert first["timestamp"] == "2026-09-14T10:00:00Z"
+    assert first["processing_status"]["stage"] == "COMPLETED"
+    assert first["processing_status"]["error"] is None
+    assert first["summary"]
+    assert len(first["body_preview"]) <= 150
+    assert first["body_preview"] == first["body_preview"][:150]
+
+
+def test_list_processed_emails_respects_limit(db, settings):
+    for i in range(3):
+        process_email(
+            db,
+            parse_email(_raw_email(f"msg_{i:03d}", "Body.", timestamp=f"2026-09-{13 + i:02d}T10:00:00Z")),
+            MockLLMProvider(),
+            MockCalendarProvider(),
+            settings,
+        )
+
+    results = list_processed_emails(db, limit=2)
+
+    assert len(results) == 2
+    assert [r["message_id"] for r in results] == ["msg_002", "msg_001"]
