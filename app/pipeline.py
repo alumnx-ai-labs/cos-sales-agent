@@ -1,3 +1,4 @@
+import re
 import uuid
 from datetime import datetime, timezone
 
@@ -23,6 +24,16 @@ from app.database.repositories import (
 from app.email.models import Email, parse_email
 from app.email.normalizer import normalize_email, normalize_subject
 from app.email.threading import ThreadCandidate, resolve_thread_id
+from app.entities.dates import resolve_date_phrase
+from app.entities.extraction import envelope_people
+from app.entities.resolution import (
+    derive_follow_up,
+    resolve_commitment,
+    resolve_meeting,
+    resolve_person,
+    resolve_personal_item,
+    resolve_project,
+)
 from app.interfaces.calendar_provider import CalendarProvider
 from app.interfaces.email_provider import EmailProvider
 from app.interfaces.llm_provider import LLMProvider
@@ -31,6 +42,8 @@ from app.knowledge.models import KnowledgeItem
 from app.processing.models import EmailResult, PipelineRunSummary, ProcessingStage
 from app.replies.drafter import draft_reply, needs_reply
 from app.replies.models import ReplyDraft
+
+_GMAIL_INTERNAL_ID_PATTERN = re.compile(r"^[0-9a-f]{16}$")
 
 _FACT_FIELD_PREDICATES = {
     "requirements": "requires",
@@ -121,6 +134,93 @@ def _process_knowledge(
                 },
                 item.model_dump(mode="json"),
             )
+
+
+def _process_entities(
+    db,
+    thread_id: str,
+    email: Email,
+    analysis: EmailAnalysis,
+    reference_now: datetime,
+) -> dict[str, list[str]]:
+    # reference_now is the email's OWN timestamp, not wall-clock "now" -- this matches the
+    # existing detect_meeting's established pattern (app/calendar/detector.py, called with
+    # email.timestamp) so a re-run days later resolves the same relative phrase the same way.
+    entities_referenced: dict[str, list[str]] = {
+        "people": [], "projects": [], "commitments": [],
+        "follow_ups": [], "meetings": [], "personal": [],
+    }
+
+    envelope = {addr.email.lower(): addr for addr in envelope_people(email)}
+    sender_email = email.from_.email.lower()
+
+    for mention in analysis.people_mentioned:
+        mention_email = (mention.email or "").lower() or None
+        is_sender = None
+        if mention_email and mention_email == sender_email:
+            is_sender = True
+        elif mention_email and mention_email in envelope:
+            is_sender = False
+        person_id = resolve_person(
+            db,
+            {"name": mention.name, "email": mention.email, "org": mention.org},
+            is_sender=is_sender,
+            now=reference_now,
+        )
+        entities_referenced["people"].append(person_id)
+
+    project_id_by_name: dict[str, str] = {}
+    for mention in analysis.projects_mentioned:
+        project_id = resolve_project(
+            db, {"name": mention.name, "org": mention.org}, goal_pillar=analysis.goal_pillar
+        )
+        entities_referenced["projects"].append(project_id)
+        project_id_by_name[mention.name] = project_id
+
+    # FollowUps are derived ONLY from a resolved Commitment (spec S5.1.1 correction) --
+    # a Meeting or PersonalItem NEVER triggers a FollowUp by itself, no matter how
+    # "actionable" the meeting is. Do not add a fallback branch here.
+    for raw_commitment in analysis.commitments_mentioned:
+        resolved_date, date_type = resolve_date_phrase(raw_commitment.date_phrase, reference_now)
+        commitment_id = resolve_commitment(
+            db,
+            thread_id=thread_id,
+            raw=raw_commitment.model_dump(mode="json", by_alias=True),
+            message_id=email.message_id,
+            made_on=reference_now,
+            resolved_date=resolved_date,
+            date_type=date_type,
+            goal_pillar=analysis.goal_pillar,
+            project_id=None,
+        )
+        entities_referenced["commitments"].append(commitment_id)
+        follow_up_id = derive_follow_up(db, commitment_id=commitment_id, thread_id=None)
+        entities_referenced["follow_ups"].append(follow_up_id)
+
+    for raw_meeting in analysis.meetings_mentioned:
+        resolved_date, _ = resolve_date_phrase(raw_meeting.date_phrase, reference_now)
+        # The actionable signal (spec S4.6): true for any future-oriented meeting mention,
+        # even a vague one with no precise resolved_date -- false only when the LLM (or,
+        # for MockLLMProvider, the simple absence of a "meet" match on past-tense "met")
+        # flagged it as historical.
+        actionable = not raw_meeting.is_past
+        meeting_id = resolve_meeting(
+            db,
+            thread_id=thread_id,
+            date=resolved_date,
+            raw=raw_meeting.model_dump(mode="json"),
+            actionable=actionable,
+        )
+        entities_referenced["meetings"].append(meeting_id)
+
+    for raw_item in analysis.personal_items_mentioned:
+        resolved_date, _ = resolve_date_phrase(raw_item.date_phrase, reference_now)
+        item_id = resolve_personal_item(
+            db, sender_email=sender_email, raw=raw_item.model_dump(mode="json"), resolved_date=resolved_date
+        )
+        entities_referenced["personal"].append(item_id)
+
+    return entities_referenced
 
 
 def run_pipeline(
@@ -237,6 +337,29 @@ def run_pipeline(
                 datetime.now(timezone.utc),
             )
             email_repo.set_stage(email.message_id, ProcessingStage.KNOWLEDGE_PROCESSED.value)
+
+            current_stage = ProcessingStage.ENTITIES_PROCESSED
+            # email.timestamp, not datetime.now() -- matches detect_meeting's existing
+            # reference-date pattern, so relative phrases resolve consistently regardless
+            # of when the pipeline actually runs.
+            entities_referenced = _process_entities(db, thread_id, email, analysis, email.timestamp)
+            source_link = (
+                f"https://mail.google.com/mail/u/0/#all/{email.message_id}"
+                if _GMAIL_INTERNAL_ID_PATTERN.match(email.message_id)
+                else None
+            )
+            email_repo.set_entity_metadata(
+                message_id=email.message_id,
+                record_id=email.message_id,
+                source_type="gmail",
+                source_link=source_link,
+                date=email.timestamp.date().isoformat(),
+                entities_referenced=entities_referenced,
+                goal_pillar=analysis.goal_pillar,
+                label_applied=analysis.label_applied,
+                confidence=analysis.confidence,
+            )
+            email_repo.set_stage(email.message_id, ProcessingStage.ENTITIES_PROCESSED.value)
 
             current_stage = ProcessingStage.REPLY_PROCESSED
             # email.from_.email is already lowercased by normalize_email; lowercase
