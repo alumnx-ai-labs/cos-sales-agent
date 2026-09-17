@@ -69,7 +69,12 @@ def resolve_date_phrase(
         day = int(explicit_match.group(2))
         year = reference_now.year
         candidate = reference_now.replace(year=year, month=month, day=day, hour=0, minute=0, second=0, microsecond=0)
-        if candidate < reference_now:
+        # Compare dates, not full timestamps: an email sent on June 5th referencing
+        # "June 5th" means today, not next year. Comparing candidate < reference_now
+        # (full precision) would incorrectly roll same-day references forward a year,
+        # since candidate is normalized to midnight and reference_now carries a real
+        # time-of-day that is almost always later than midnight.
+        if candidate.date() < reference_now.date():
             candidate = candidate.replace(year=year + 1)
         return candidate, "stated"
 

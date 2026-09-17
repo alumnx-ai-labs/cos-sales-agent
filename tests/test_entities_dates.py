@@ -18,6 +18,19 @@ def test_resolve_date_phrase_handles_explicit_month_day_as_stated():
     assert resolved.year == 2027  # June 5 already passed in the reference year, rolls to next year
 
 
+def test_resolve_date_phrase_explicit_date_on_the_same_day_does_not_roll_to_next_year():
+    # A same-day reference ("June 5th" sent on June 5th at 2pm) must resolve to THIS
+    # year's June 5th, not next year's -- comparing full timestamps (candidate normalized
+    # to midnight vs. reference_now's real time-of-day) would wrongly treat today as
+    # "already passed" and roll forward a year.
+    reference = datetime(2026, 6, 5, 14, 0, tzinfo=timezone.utc)
+    resolved, date_type = resolve_date_phrase("by June 5th", reference)
+    assert date_type == "stated"
+    assert resolved.year == 2026
+    assert resolved.month == 6
+    assert resolved.day == 5
+
+
 def test_resolve_date_phrase_handles_tomorrow_as_inferred():
     resolved, date_type = resolve_date_phrase("let's talk tomorrow", _NOW)
     assert date_type == "inferred"
