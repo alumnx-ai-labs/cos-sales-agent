@@ -1526,6 +1526,19 @@ from app.entities.models import Commitment, FollowUp, Meeting, Person, PersonalI
 from app.knowledge.normalize import normalize_text
 
 
+def _parse_iso(value: str | None) -> datetime | None:
+    # pydantic's model_dump(mode="json") serializes a tz-aware UTC datetime with a
+    # trailing "Z" (e.g. "...T00:00:00Z"), while Python's own datetime.isoformat()
+    # produces "...+00:00" for the same instant. Comparing those two string forms
+    # directly breaks the "exact match" dedup rule for any non-null date, since two
+    # representations of the identical instant would never compare equal as strings.
+    # Parsing back to a datetime for comparison makes the equality check instant-based
+    # rather than string-format-based, which is what "exact natural-key match" requires.
+    if value is None:
+        return None
+    return datetime.fromisoformat(value.replace("Z", "+00:00"))
+
+
 def resolve_person(
     db: Database, mention: dict[str, Any], is_sender: bool | None, now: datetime
 ) -> str:
@@ -1608,13 +1621,12 @@ def resolve_commitment(
 ) -> str:
     repo = CommitmentRepository(db)
     what_normalized = normalize_text(raw["what"])
-    resolved_date_iso = resolved_date.isoformat() if resolved_date else None
 
     for candidate in repo.all_for_thread(thread_id):
         if (
             normalize_text(candidate["what"]) == what_normalized
             and candidate["class"] == raw["class"]
-            and candidate.get("committed_date") == resolved_date_iso
+            and _parse_iso(candidate.get("committed_date")) == resolved_date
         ):
             return candidate["id"]
 
@@ -1643,10 +1655,9 @@ def resolve_meeting(
     db: Database, thread_id: str, date: datetime | None, raw: dict[str, Any], actionable: bool
 ) -> str:
     repo = MeetingRepository(db)
-    date_iso = date.isoformat() if date else None
 
     for candidate in repo.all_for_thread(thread_id):
-        if candidate.get("date") == date_iso:
+        if _parse_iso(candidate.get("date")) == date:
             return candidate["id"]
 
     meeting_id = next_id(db, "MTG-")
