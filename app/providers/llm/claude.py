@@ -12,8 +12,10 @@ from app.interfaces.llm_provider import LLMProvider
 _ANALYSIS_INSTRUCTIONS = (
     "You are a sales email analyst. Given the email below, return ONLY a JSON object with keys: "
     "summary, intent, entities, facts (list of {subject,predicate,object}), requirements, pain_points, "
-    "buying_signals, objections, competitors, pricing_mentions, commitments, action_items, meetings, "
-    "people, companies, products, "
+    "buying_signals, objections, competitors, pricing_mentions, commitments, action_items, "
+    "meetings (list of short plain strings, e.g. 'Call last Tuesday' -- NOT objects; use "
+    "meetings_mentioned below for structured detail on the same meetings), "
+    "people, companies, products (each a list of short plain strings, not objects), "
     "people_mentioned (list of {name, email, org, role_hint} for each person mentioned or corresponding), "
     "projects_mentioned (list of {name, org, objective_hint}), "
     "commitments_mentioned (list of {what, class: one of mine/owed_to_me/theirs/recap, owed_by, owed_to, "
