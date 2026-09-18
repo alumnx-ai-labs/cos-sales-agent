@@ -1,7 +1,10 @@
 import json
+import re
 from typing import Any
 
 import anthropic
+
+_CODE_FENCE_RE = re.compile(r"^```(?:json)?\s*|\s*```$", re.IGNORECASE)
 
 from app.email.models import Email
 from app.interfaces.llm_provider import LLMProvider
@@ -39,7 +42,8 @@ class ClaudeProvider(LLMProvider):
             system=system,
             messages=[{"role": "user", "content": user}],
         )
-        text = "".join(block.text for block in response.content if hasattr(block, "text"))
+        text = "".join(block.text for block in response.content if hasattr(block, "text")).strip()
+        text = _CODE_FENCE_RE.sub("", text).strip()
         return json.loads(text)
 
     def analyze_email(self, email: Email) -> dict[str, Any]:
