@@ -35,10 +35,10 @@ class ClaudeProvider(LLMProvider):
         self._client = anthropic.Anthropic(api_key=api_key)
         self._model = model
 
-    def _complete_json(self, system: str, user: str) -> dict[str, Any]:
+    def _complete_json(self, system: str, user: str, max_tokens: int = 1024) -> dict[str, Any]:
         response = self._client.messages.create(
             model=self._model,
-            max_tokens=1024,
+            max_tokens=max_tokens,
             system=system,
             messages=[{"role": "user", "content": user}],
         )
@@ -50,6 +50,7 @@ class ClaudeProvider(LLMProvider):
         result = self._complete_json(
             _ANALYSIS_INSTRUCTIONS,
             f"Subject: {email.subject}\n\nBody:\n{email.body}",
+            max_tokens=4096,
         )
         result.setdefault("email_id", email.message_id)
         return result
@@ -62,7 +63,7 @@ class ClaudeProvider(LLMProvider):
             "'inferred' for your own inferences. Never remove prior information unless clearly superseded."
         )
         user = json.dumps({"previous_context": previous_context, "new_analysis": new_analysis})
-        return self._complete_json(instructions, user)
+        return self._complete_json(instructions, user, max_tokens=4096)
 
     def verify_same_fact(self, existing_value: str, new_value: str, subject: str, predicate: str) -> bool:
         instructions = "Answer ONLY with JSON: {\"same_fact\": true} or {\"same_fact\": false}."
@@ -83,4 +84,4 @@ class ClaudeProvider(LLMProvider):
                 "sender_name": latest_email.from_.name or latest_email.from_.email,
             }
         )
-        return self._complete_json(instructions, user)
+        return self._complete_json(instructions, user, max_tokens=2048)
