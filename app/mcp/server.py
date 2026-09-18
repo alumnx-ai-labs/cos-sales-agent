@@ -1,4 +1,5 @@
 # app/mcp/server.py
+import os
 from functools import lru_cache
 from typing import Any
 
@@ -73,7 +74,15 @@ def list_processed_emails(limit: int = 50) -> list[dict[str, Any]]:
 
 
 def main() -> None:
-    mcp.run()
+    transport = os.environ.get("MCP_TRANSPORT", "stdio")
+    if transport == "streamable-http":
+        mcp.settings.host = "0.0.0.0"
+        mcp.settings.port = int(os.environ.get("PORT", 8000))
+        secret = os.environ.get("MCP_URL_SECRET")
+        if not secret:
+            raise RuntimeError("MCP_URL_SECRET is required when MCP_TRANSPORT=streamable-http")
+        mcp.settings.streamable_http_path = f"/{secret}/mcp"
+    mcp.run(transport=transport)
 
 
 if __name__ == "__main__":
